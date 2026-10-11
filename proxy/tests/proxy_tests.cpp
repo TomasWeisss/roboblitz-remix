@@ -146,13 +146,14 @@ void TestShaderCache(const char* path) {
         CHECK(!info.viewProjection.rowMajor);
     }
 
-    std::printf("Shader cache: %d vertex shaders: World %d, UI %d, Shadow %d, Screen %d\n", parsed,
-                kinds[ShaderKind::World], kinds[ShaderKind::UI], kinds[ShaderKind::Shadow], kinds[ShaderKind::Screen]);
+    std::printf("Shader cache: %d vertex shaders: World %d, UI %d, Shadow %d, Screen %d, Depth %d\n", parsed,
+                kinds[ShaderKind::World], kinds[ShaderKind::UI], kinds[ShaderKind::Shadow], kinds[ShaderKind::Screen], kinds[ShaderKind::Depth]);
     std::printf("ViewProjectionMatrix registers:");
     for (const auto& [reg, count] : viewProjectionRegisters) std::printf(" c%d x%d", reg, count);
     std::printf("\n");
     CHECK(parsed == 184);
-    CHECK(kinds[ShaderKind::World] == 148);
+    CHECK(kinds[ShaderKind::World] == 125);
+    CHECK(kinds[ShaderKind::Depth] == 23); // depth-only, velocity, occlusion query, shadow volume
 }
 
 } // namespace

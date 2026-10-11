@@ -11,6 +11,7 @@ enum class ShaderKind {
     UI,      // canvas / HUD (SimpleElement): has Transform
     Shadow,  // shadow-map depth rendering: has ShadowMatrix
     Screen,  // full-screen passes: post-process, gamma, fog, ...
+    Depth,
 };
 
 const char* ToString(ShaderKind kind);

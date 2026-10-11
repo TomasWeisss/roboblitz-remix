@@ -81,7 +81,7 @@ CreateVertexShaderFn originalCreateVertexShader;
 SetVertexShaderFn originalSetVertexShader;
 SetVertexShaderConstantFFn originalSetVertexShaderConstantF;
 
-constexpr int kKindCount = 4;
+constexpr int kKindCount = 5;
 constexpr UINT kMaxVertexConstants = 256; // vs_3_0
 
 struct DrawStats {
@@ -230,6 +230,12 @@ bool PrepareDraw(IDirect3DDevice9* device) {
     bool draw = true;
 
     switch (effectiveKind) {
+        case ShaderKind::Depth:
+            if (config.skipDepthPasses) {
+                draw = false;
+                break;
+            }
+            [[fallthrough]];
         case ShaderKind::World: {
             const MatrixConstant& vp = shader->viewProjection;
             if (!UpdateCamera(ReadMatrixConstant(&state.vsConstants[vp.reg], vp.rowMajor))) {

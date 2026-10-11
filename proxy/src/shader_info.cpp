@@ -106,6 +106,7 @@ const char* ToString(ShaderKind kind) {
     case ShaderKind::UI: return "UI";
     case ShaderKind::Shadow: return "Shadow";
     case ShaderKind::Screen: return "Screen";
+    case ShaderKind::Depth: return "Depth";
     }
     return "?";
 }
@@ -127,7 +128,8 @@ bool ParseVertexShader(const DWORD* function, VertexShaderInfo& out) {
     }
     if (!found) return false;
 
-    if (out.viewProjection.IsValid()) out.kind = ShaderKind::World;
+    if (out.viewProjection.IsValid() && HasConstant(out, "CameraPosition")) out.kind = ShaderKind::World;
+    else if (out.viewProjection.IsValid()) out.kind = ShaderKind::Depth;
     else if (HasConstant(out, "Transform")) out.kind = ShaderKind::UI;
     else if (HasConstant(out, "ShadowMatrix")) out.kind = ShaderKind::Shadow;
     else out.kind = ShaderKind::Screen;
