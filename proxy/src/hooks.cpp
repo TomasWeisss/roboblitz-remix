@@ -36,6 +36,9 @@ namespace slot {
     constexpr int CreateVertexShader = 91;
     constexpr int SetVertexShader = 92;
     constexpr int SetVertexShaderConstantF = 94;
+    constexpr int CreateQuery = 118;
+
+    constexpr int QueryIssue = 6;
 }
 
 template <typename Fn>
@@ -66,6 +69,8 @@ using DrawIndexedPrimitiveUPFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, 
 using CreateVertexShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, const DWORD*, IDirect3DVertexShader9**);
 using SetVertexShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, IDirect3DVertexShader9*);
 using SetVertexShaderConstantFFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
+using CreateQueryFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DQUERYTYPE, IDirect3DQuery9**);
+using QueryIssueFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DQuery9*, DWORD);
 
 CreateDeviceFn originalCreateDevice;
 ResetFn originalReset;
@@ -80,6 +85,8 @@ DrawIndexedPrimitiveUPFn originalDrawIndexedPrimitiveUP;
 CreateVertexShaderFn originalCreateVertexShader;
 SetVertexShaderFn originalSetVertexShader;
 SetVertexShaderConstantFFn originalSetVertexShaderConstantF;
+CreateQueryFn originalCreateQuery;
+QueryIssueFn originalQueryIssue;
 
 constexpr int kKindCount = 5;
 constexpr UINT kMaxVertexConstants = 256; // vs_3_0
@@ -110,6 +117,8 @@ struct DeviceState {
     // Render target tracking
     IDirect3DSurface9* backBuffer = nullptr;
     bool renderingToBackbuffer = true;
+
+    unsigned activeOcclusionQueries = 0;
 
     DrawStats stats;
     unsigned frame = 0;
@@ -228,6 +237,10 @@ bool PrepareDraw(IDirect3DDevice9* device) {
     if (shader->kind == ShaderKind::UI && !state.renderingToBackbuffer)
         effectiveKind = ShaderKind::Screen;
     bool draw = true;
+
+    // Always draw occlusion queries
+    if (state.activeOcclusionQueries > 0)
+        return draw;
 
     switch (effectiveKind) {
         case ShaderKind::Depth:
@@ -415,6 +428,25 @@ HRESULT STDMETHODCALLTYPE HookSetVertexShaderConstantF(IDirect3DDevice9* device,
     return originalSetVertexShaderConstantF(device, start, data, count);
 }
 
+HRESULT STDMETHODCALLTYPE HookQueryIssue(IDirect3DQuery9* query, DWORD flags) {
+    if (query->GetType() == D3DQUERYTYPE_OCCLUSION) {
+        if (flags & D3DISSUE_BEGIN)
+            ++state.activeOcclusionQueries;
+        if ((flags & D3DISSUE_END) && state.activeOcclusionQueries > 0)
+            --state.activeOcclusionQueries;
+    }
+
+    return originalQueryIssue(query, flags);
+}
+
+HRESULT STDMETHODCALLTYPE HookCreateQuery(IDirect3DDevice9* device, D3DQUERYTYPE type, IDirect3DQuery9** query) {
+    const HRESULT result = originalCreateQuery(device, type, query);
+    if (SUCCEEDED(result) && query && *query)
+        PatchVtable(*query, slot::QueryIssue, HookQueryIssue, originalQueryIssue);
+
+    return result;
+}
+
 // --- IDirect3D9 hook ---
 
 HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
@@ -442,6 +474,7 @@ HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEV
     PatchVtable(d, slot::CreateVertexShader, HookCreateVertexShader, originalCreateVertexShader);
     PatchVtable(d, slot::SetVertexShader, HookSetVertexShader, originalSetVertexShader);
     PatchVtable(d, slot::SetVertexShaderConstantF, HookSetVertexShaderConstantF, originalSetVertexShaderConstantF);
+    PatchVtable(d, slot::CreateQuery, HookCreateQuery, originalCreateQuery);
     return result;
 }
 
