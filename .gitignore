@@ -1,0 +1,56 @@
+# --- Build output ---
+build/
+out/
+dist/
+proxy/**/*.obj
+proxy/**/*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+*.ipch
+*.tlog
+*.lastbuildstate
+
+# --- IDE / editor ---
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+CMakeUserPresets.json
+CMakeSettings.json
+
+# --- Built binaries (deployed by scripts, never committed) ---
+proxy/**/*.dll
+proxy/**/*.exe
+
+# --- Remix runtime (download it; tested version is in README.md) ---
+.trex/
+remix-runtime/
+d3d9_remix.dll
+NvRemixLauncher32.exe
+
+# --- Remix / game runtime artifacts ---
+*.log
+rtx-remix/logs/
+rtx-remix/captures/
+user.conf
+*.dxvk-cache
+LocalShaderCache.upk
+
+# --- Remix Toolkit project: keep sources, drop caches/derived data ---
+remix-project/**/.deps/
+remix-project/**/.cache/
+remix-project/**/captures/
+remix-project/**/*.tmp
+
+# --- Original game files (copyrighted; only patches go in shaders/patches) ---
+shaders/original/
+shaders/patched/
+
+# --- OS ---
+Thumbs.db
+desktop.ini
+.DS_Store

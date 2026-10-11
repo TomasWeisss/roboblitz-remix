@@ -1,0 +1,26 @@
+# Store everything as LF in the repo; text detection is automatic.
+* text=auto eol=lf
+
+# Windows tools that need CRLF on disk
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Game shaders are CRLF (all 80 original .usf files); keep ours identical
+*.usf text eol=crlf
+
+# Patches must stay byte-for-byte as generated (they target CRLF files)
+*.patch -text
+*.diff  -text
+
+# Large/binary Remix Toolkit assets -> Git LFS
+*.dds   filter=lfs diff=lfs merge=lfs -text
+*.png   filter=lfs diff=lfs merge=lfs -text
+*.tga   filter=lfs diff=lfs merge=lfs -text
+*.exr   filter=lfs diff=lfs merge=lfs -text
+*.jpg   filter=lfs diff=lfs merge=lfs -text
+*.usd   filter=lfs diff=lfs merge=lfs -text
+*.usdc  filter=lfs diff=lfs merge=lfs -text
+*.usdz  filter=lfs diff=lfs merge=lfs -text
+*.fbx   filter=lfs diff=lfs merge=lfs -text
+*.obj   filter=lfs diff=lfs merge=lfs -text
+*.blend filter=lfs diff=lfs merge=lfs -text

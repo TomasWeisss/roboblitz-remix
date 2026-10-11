@@ -1,0 +1,31 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{bat,cmd}]
+end_of_line = crlf
+
+# Match the game's original shader files
+[*.usf]
+end_of_line = crlf
+charset = unset
+indent_style = tab
+
+# Patches are byte-exact; never let an editor touch them
+[*.{patch,diff}]
+end_of_line = unset
+charset = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml,json,usda}]
+indent_size = 2
