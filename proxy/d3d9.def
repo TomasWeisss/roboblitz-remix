@@ -1,0 +1,4 @@
+LIBRARY d3d9
+EXPORTS
+    ; RoboGame.exe and RoboLaunch.exe import only this function from d3d9.dll
+    Direct3DCreate9

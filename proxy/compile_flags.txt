@@ -1,0 +1,7 @@
+-xc++
+-std=c++17
+--target=i686-pc-windows-msvc
+-DWIN32_LEAN_AND_MEAN
+-DNOMINMAX
+-D_CRT_SECURE_NO_WARNINGS
+-Isrc
