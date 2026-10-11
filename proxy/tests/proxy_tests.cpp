@@ -3,6 +3,7 @@
 
 #include "camera.h"
 #include "shader_info.h"
+#include "texture_analysis.h"
 
 #include <cmath>
 #include <cstdio>
@@ -117,6 +118,53 @@ void TestReadMatrixConstant() {
     CHECK(rows._12 == 5 && rows._21 == 2 && rows._43 == 12);
 }
 
+// RGB565 helper for synthetic DXT blocks
+uint16_t Rgb565(float r, float g, float b) {
+    return static_cast<uint16_t>((lround(r * 31) << 11) | (lround(g * 63) << 5) | lround(b * 31));
+}
+
+// A DXT1 texture where every block has the given two endpoint colours
+std::vector<uint8_t> MakeDxt1(UINT blocksX, UINT blocksY, uint16_t c0, uint16_t c1) {
+    std::vector<uint8_t> data(blocksX * blocksY * 8, 0);
+    for (size_t i = 0; i < data.size(); i += 8) {
+        memcpy(&data[i], &c0, 2);
+        memcpy(&data[i + 2], &c1, 2);
+    }
+    return data;
+}
+
+void TestClassifyTextures() {
+    // Flat and slightly tilted normals vs typical colours
+    const auto normal = MakeDxt1(16, 16, Rgb565(0.5f, 0.5f, 1.0f), Rgb565(0.62f, 0.45f, 0.96f));
+    const auto grey = MakeDxt1(16, 16, Rgb565(0.5f, 0.5f, 0.5f), Rgb565(0.4f, 0.4f, 0.4f));
+    const auto sky = MakeDxt1(16, 16, Rgb565(0.35f, 0.55f, 0.9f), Rgb565(0.2f, 0.4f, 0.8f));
+    CHECK(ClassifyTexture(D3DFMT_DXT1, 64, 64, normal.data(), 16 * 8) == TextureContent::NormalMap);
+    CHECK(ClassifyTexture(D3DFMT_DXT1, 64, 64, grey.data(), 16 * 8) == TextureContent::Color);
+    CHECK(ClassifyTexture(D3DFMT_DXT1, 64, 64, sky.data(), 16 * 8) == TextureContent::Color);
+
+    // DXT5: colour endpoints are in the second half of each 16-byte block
+    std::vector<uint8_t> dxt5(16 * 16 * 16, 0xFF);
+    for (size_t i = 0; i < dxt5.size(); i += 16) {
+        const uint16_t c = Rgb565(0.5f, 0.5f, 1.0f);
+        memcpy(&dxt5[i + 8], &c, 2);
+        memcpy(&dxt5[i + 10], &c, 2);
+    }
+    CHECK(ClassifyTexture(D3DFMT_DXT5, 64, 64, dxt5.data(), 16 * 16) == TextureContent::NormalMap);
+
+    // A8R8G8B8, bytes B G R A
+    std::vector<uint8_t> argb(32 * 32 * 4);
+    for (size_t i = 0; i < argb.size(); i += 4) {
+        argb[i] = 255; argb[i + 1] = 128; argb[i + 2] = 128; argb[i + 3] = 255;
+    }
+    CHECK(ClassifyTexture(D3DFMT_A8R8G8B8, 32, 32, argb.data(), 32 * 4) == TextureContent::NormalMap);
+    for (size_t i = 0; i < argb.size(); i += 4) argb[i] = 40; // brownish: B=40 G=128 R=128
+    CHECK(ClassifyTexture(D3DFMT_A8R8G8B8, 32, 32, argb.data(), 32 * 4) == TextureContent::Color);
+
+    // Too small to judge, and unsupported formats
+    CHECK(ClassifyTexture(D3DFMT_DXT1, 4, 4, normal.data(), 8) == TextureContent::Unknown);
+    CHECK(ClassifyTexture(D3DFMT_R5G6B5, 64, 64, normal.data(), 128) == TextureContent::Unknown);
+}
+
 // Runs the parser over every vs_3_0 shader in the game's shader cache
 void TestShaderCache(const char* path) {
     std::ifstream file(path, std::ios::binary);
@@ -156,6 +204,26 @@ void TestShaderCache(const char* path) {
     CHECK(kinds[ShaderKind::World] == 56);  // base pass, translucency, particles, decals
     CHECK(kinds[ShaderKind::Depth] == 23);  // depth-only, velocity, occlusion query, shadow volume
     CHECK(kinds[ShaderKind::Light] == 69);  // point/spot/directional passes for every vertex factory
+
+    // Pixel shaders: what does sampler 0 hold? (Remix uses stage 0 as albedo)
+    std::map<std::string, int> sampler0;
+    int pixelShaders = 0;
+    const DWORD ps30 = 0xFFFF0300;
+    for (size_t i = 0; i + 8 <= bytes.size(); ++i) {
+        if (memcmp(&bytes[i], &ps30, 4) != 0) continue;
+        const size_t dwords = (bytes.size() - i) / 4;
+        std::vector<DWORD> function(dwords);
+        memcpy(function.data(), &bytes[i], dwords * 4);
+
+        PixelShaderInfo info;
+        if (!ParsePixelShader(function.data(), info)) continue;
+        ++pixelShaders;
+        ++sampler0[info.samplers.empty() || info.samplers[0].empty() ? "(none)" : info.samplers[0]];
+    }
+    std::printf("Shader cache: %d pixel shaders; sampler 0 holds:", pixelShaders);
+    for (const auto& [name, count] : sampler0) std::printf(" %s x%d", name.c_str(), count);
+    std::printf("\n");
+    CHECK(pixelShaders > 1000);
 }
 
 } // namespace
@@ -165,6 +233,7 @@ int main(int argc, char** argv) {
     TestDecomposeScaledFinitePerspective();
     TestRejectOrthographic();
     TestReadMatrixConstant();
+    TestClassifyTextures();
     if (argc > 1) TestShaderCache(argv[1]);
 
     std::printf(failures ? "%d check(s) failed\n" : "All tests passed\n", failures);

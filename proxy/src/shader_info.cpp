@@ -40,6 +40,7 @@ struct CtabType {
 constexpr uint32_t kCommentOpcode = 0xFFFE;
 constexpr uint32_t kCtabFourCC = 0x42415443; // 'CTAB'
 constexpr uint16_t kRegisterSetFloat4 = 2;
+constexpr uint16_t kRegisterSetSampler = 3;
 constexpr uint16_t kClassMatrixRows = 2;
 constexpr uint16_t kClassMatrixColumns = 3;
 
@@ -62,37 +63,47 @@ struct Table {
     }
 };
 
-bool ParseTable(const Table& table, VertexShaderInfo& out) {
+// One entry of the constant table
+struct Constant {
+    std::string name;
+    uint16_t registerSet;
+    uint16_t registerIndex;
+    uint16_t registerCount;
+    const CtabType* type; // may be null
+};
+
+bool ReadConstants(const Table& table, std::vector<Constant>& out) {
     const CtabHeader* header = table.At<CtabHeader>(0);
     if (!header) return false;
 
     for (uint32_t i = 0; i < header->constants; ++i) {
-        const CtabConstant* constant = table.At<CtabConstant>(header->constantInfo + i * sizeof(CtabConstant));
-        if (!constant) return false;
+        const CtabConstant* entry = table.At<CtabConstant>(header->constantInfo + i * sizeof(CtabConstant));
+        if (!entry) return false;
 
-        std::string name;
-        if (!table.String(constant->name, name)) return false;
-        out.constants.push_back(name);
-
-        const CtabType* type = table.At<CtabType>(constant->typeInfo);
-        if (!type || constant->registerSet != kRegisterSetFloat4) continue;
-
-        const bool isMatrix4x4 = (type->typeClass == kClassMatrixRows || type->typeClass == kClassMatrixColumns) &&
-                                 type->rows == 4 && type->columns == 4 && constant->registerCount == 4;
-        if (!isMatrix4x4) continue;
-
-        MatrixConstant matrix;
-        matrix.reg = constant->registerIndex;
-        matrix.rowMajor = type->typeClass == kClassMatrixRows;
-
-        if (name == "ViewProjectionMatrix") out.viewProjection = matrix;
-        else if (name == "LocalToWorld") out.localToWorld = matrix;
+        Constant constant{{}, entry->registerSet, entry->registerIndex, entry->registerCount,
+                          table.At<CtabType>(entry->typeInfo)};
+        if (!table.String(entry->name, constant.name)) return false;
+        out.push_back(std::move(constant));
     }
     return true;
 }
 
-bool HasConstant(const VertexShaderInfo& info, const char* name) {
-    for (const std::string& constant : info.constants) {
+// Finds the constant table among the comments after the version token and reads it
+bool ReadShaderConstants(const DWORD* function, std::vector<Constant>& out) {
+    if (!function) return false;
+    for (const DWORD* token = function + 1; (*token & 0xFFFF) == kCommentOpcode;) {
+        const uint32_t length = (*token >> 16) & 0x7FFF; // in DWORDs, excluding this token
+        if (length >= 1 && token[1] == kCtabFourCC) {
+            const Table table{reinterpret_cast<const uint8_t*>(token + 2), (length - 1) * sizeof(DWORD)};
+            return ReadConstants(table, out);
+        }
+        token += length + 1;
+    }
+    return false;
+}
+
+bool HasConstant(const std::vector<std::string>& names, const char* name) {
+    for (const std::string& constant : names) {
         if (constant == name) return true;
     }
     return false;
@@ -114,27 +125,52 @@ const char* ToString(ShaderKind kind) {
 
 bool ParseVertexShader(const DWORD* function, VertexShaderInfo& out) {
     out = {};
-    if (!function) return false;
+    std::vector<Constant> constants;
+    if (!ReadShaderConstants(function, constants)) return false;
 
-    // Token 0 is the version; the constant table is one of the comments that follow it
-    bool found = false;
-    for (const DWORD* token = function + 1; (*token & 0xFFFF) == kCommentOpcode;) {
-        const uint32_t length = (*token >> 16) & 0x7FFF; // in DWORDs, excluding this token
-        if (length >= 1 && token[1] == kCtabFourCC) {
-            const Table table{reinterpret_cast<const uint8_t*>(token + 2), (length - 1) * sizeof(DWORD)};
-            found = ParseTable(table, out);
-            break;
-        }
-        token += length + 1;
+    for (const Constant& constant : constants) {
+        out.constants.push_back(constant.name);
+
+        const CtabType* type = constant.type;
+        const bool isMatrix4x4 = type && constant.registerSet == kRegisterSetFloat4 &&
+                                 (type->typeClass == kClassMatrixRows || type->typeClass == kClassMatrixColumns) &&
+                                 type->rows == 4 && type->columns == 4 && constant.registerCount == 4;
+        if (!isMatrix4x4) continue;
+
+        MatrixConstant matrix;
+        matrix.reg = constant.registerIndex;
+        matrix.rowMajor = type->typeClass == kClassMatrixRows;
+
+        if (constant.name == "ViewProjectionMatrix") out.viewProjection = matrix;
+        else if (constant.name == "LocalToWorld") out.localToWorld = matrix;
     }
-    if (!found) return false;
 
-    const bool isLightPass = HasConstant(out, "LightPositionAndInvRadius") || HasConstant(out, "LightDirection");
+    const bool isLightPass = HasConstant(out.constants, "LightPositionAndInvRadius") || HasConstant(out.constants, "LightDirection");
     if (out.viewProjection.IsValid() && isLightPass) out.kind = ShaderKind::Light;
-    else if (out.viewProjection.IsValid() && HasConstant(out, "CameraPosition")) out.kind = ShaderKind::World;
+    else if (out.viewProjection.IsValid() && HasConstant(out.constants, "CameraPosition")) out.kind = ShaderKind::World;
     else if (out.viewProjection.IsValid()) out.kind = ShaderKind::Depth;
-    else if (HasConstant(out, "Transform")) out.kind = ShaderKind::UI;
-    else if (HasConstant(out, "ShadowMatrix")) out.kind = ShaderKind::Shadow;
+    else if (HasConstant(out.constants, "Transform")) out.kind = ShaderKind::UI;
+    else if (HasConstant(out.constants, "ShadowMatrix")) out.kind = ShaderKind::Shadow;
     else out.kind = ShaderKind::Screen;
+    return true;
+}
+
+bool ParsePixelShader(const DWORD* function, PixelShaderInfo& out) {
+    out = {};
+    std::vector<Constant> constants;
+    if (!ReadShaderConstants(function, constants)) return false;
+
+    for (const Constant& constant : constants) {
+        out.constants.push_back(constant.name);
+        if (constant.registerSet != kRegisterSetSampler) continue;
+
+        // Sampler arrays (e.g. LightMapTextures[3]) take one register per element
+        for (uint16_t i = 0; i < constant.registerCount; ++i) {
+            const size_t reg = constant.registerIndex + i;
+            if (out.samplers.size() <= reg) out.samplers.resize(reg + 1);
+            out.samplers[reg] = constant.registerCount > 1 ? constant.name + "[" + std::to_string(i) + "]"
+                                                           : constant.name;
+        }
+    }
     return true;
 }

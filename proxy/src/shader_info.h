@@ -31,12 +31,21 @@ struct MatrixConstant {
 };
 
 struct VertexShaderInfo {
+    int id = 0; // assigned by the proxy, for logs
     ShaderKind kind = ShaderKind::Screen;
     MatrixConstant viewProjection;
     MatrixConstant localToWorld;
     std::vector<std::string> constants; // all constant names, for logging
 };
 
-// Parses the D3DX constant table (CTAB comment) of shader bytecode as passed to
-// IDirect3DDevice9::CreateVertexShader. Returns false if the bytecode has no constant table.
+struct PixelShaderInfo {
+    int id = 0; // assigned by the proxy, for logs
+    std::vector<std::string> samplers;  // sampler name by register (s#); empty if unused
+    std::vector<std::string> constants; // all constant names, for logging
+};
+
+// Parse the D3DX constant table (CTAB comment) of shader bytecode as passed to
+// IDirect3DDevice9::CreateVertexShader / CreatePixelShader. Return false if the bytecode
+// has no constant table.
 bool ParseVertexShader(const DWORD* function, VertexShaderInfo& out);
+bool ParsePixelShader(const DWORD* function, PixelShaderInfo& out);

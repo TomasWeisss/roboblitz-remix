@@ -17,6 +17,7 @@ add_compile_options(/W4 /permissive-)
 add_library(proxy_core STATIC
     src/shader_info.cpp
     src/camera.cpp
+    src/texture_analysis.cpp
 )
 target_include_directories(proxy_core PUBLIC src)
 
