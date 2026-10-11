@@ -3,6 +3,7 @@
 
 #include "camera.h"
 #include "shader_info.h"
+#include "light_conversion.h"
 #include "texture_analysis.h"
 
 #include <cmath>
@@ -165,6 +166,44 @@ void TestClassifyTextures() {
     CHECK(ClassifyTexture(D3DFMT_R5G6B5, 64, 64, normal.data(), 128) == TextureContent::Unknown);
 }
 
+void TestLightConversion() {
+    const float positionAndInvRadius[4] = {100, 200, 300, 1.0f / 512};
+    const float color[3] = {4, 2, 1}; // brightness 4
+
+    D3DLIGHT9 point;
+    CHECK(ToD3DLight(MakePointLight(positionAndInvRadius, color), point));
+    CHECK(point.Type == D3DLIGHT_POINT);
+    CHECK(point.Position.x == 100 && point.Position.y == 200 && point.Position.z == 300);
+    CHECK(std::fabs(point.Range - 512 * 2) < 1e-2f); // radius * sqrt(brightness)
+    CHECK(point.Attenuation0 == 1 && point.Attenuation1 == 0 && point.Attenuation2 == 0);
+
+    // UE3 spot: outer cone 40 deg, inner 20 deg (half angles)
+    const float pi = 3.14159265f;
+    const float cosOuter = std::cos(40 * pi / 180), cosInner = std::cos(20 * pi / 180);
+    const float spotAngles[2] = {cosOuter, 1.0f / (cosInner - cosOuter)};
+    const float spotDirection[3] = {0, 0, -2}; // pointing down, not normalized
+    D3DLIGHT9 spot;
+    CHECK(ToD3DLight(MakeSpotLight(positionAndInvRadius, color, spotDirection, spotAngles), spot));
+    CHECK(spot.Type == D3DLIGHT_SPOT);
+    CHECK(std::fabs(spot.Direction.z + 1) < 1e-5f);
+    CHECK(std::fabs(spot.Phi - 80 * pi / 180) < 1e-3f);   // D3D9 uses full cone angles
+    CHECK(std::fabs(spot.Theta - 40 * pi / 180) < 1e-3f);
+
+    // Directional: UE3 gives the direction towards the light, D3D9 the direction it travels
+    const float towardsLight[3] = {0, 0, 1};
+    D3DLIGHT9 sun;
+    CHECK(ToD3DLight(MakeDirectionalLight(towardsLight, color), sun));
+    CHECK(sun.Type == D3DLIGHT_DIRECTIONAL && sun.Direction.z == -1);
+
+    // Same light from another light pass vs a different light; black lights are dropped
+    const float moved[4] = {100.2f, 200, 300, 1.0f / 512};
+    const float elsewhere[4] = {150, 200, 300, 1.0f / 512};
+    CHECK(SameLight(MakePointLight(positionAndInvRadius, color), MakePointLight(moved, color)));
+    CHECK(!SameLight(MakePointLight(positionAndInvRadius, color), MakePointLight(elsewhere, color)));
+    const float black[3] = {0, 0, 0};
+    CHECK(!ToD3DLight(MakePointLight(positionAndInvRadius, black), point));
+}
+
 // Runs the parser over every vs_3_0 shader in the game's shader cache
 void TestShaderCache(const char* path) {
     std::ifstream file(path, std::ios::binary);
@@ -234,6 +273,7 @@ int main(int argc, char** argv) {
     TestRejectOrthographic();
     TestReadMatrixConstant();
     TestClassifyTextures();
+    TestLightConversion();
     if (argc > 1) TestShaderCache(argv[1]);
 
     std::printf(failures ? "%d check(s) failed\n" : "All tests passed\n", failures);

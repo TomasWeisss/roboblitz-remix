@@ -29,9 +29,10 @@ Direct3DCreate9Fn LoadRealDirect3DCreate9() {
     }
 
     Log("Loaded %ls", path.c_str());
-    Log("Config: SkipScreenPasses=%d SkipShadowPasses=%d SkipDepthPasses=%d SkipLightPasses=%d FixAlbedo=%d UseLocalToWorld=%d "
+    Log("Config: SkipScreenPasses=%d SkipShadowPasses=%d SkipDepthPasses=%d SkipLightPasses=%d FixAlbedo=%d TranslateLights=%d "
+        "UseLocalToWorld=%d "
         "LogShaders=%d DumpFrame=%u",
-        config.skipScreenPasses, config.skipShadowPasses, config.skipDepthPasses, config.skipLightPasses, config.fixAlbedo,
+        config.skipScreenPasses, config.skipShadowPasses, config.skipDepthPasses, config.skipLightPasses, config.fixAlbedo, config.translateLights,
         config.useLocalToWorld, config.logShaders, config.dumpFrame);
     return reinterpret_cast<Direct3DCreate9Fn>(GetProcAddress(module, "Direct3DCreate9"));
 }

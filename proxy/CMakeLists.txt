@@ -18,6 +18,7 @@ add_library(proxy_core STATIC
     src/shader_info.cpp
     src/camera.cpp
     src/texture_analysis.cpp
+    src/light_conversion.cpp
 )
 target_include_directories(proxy_core PUBLIC src)
 

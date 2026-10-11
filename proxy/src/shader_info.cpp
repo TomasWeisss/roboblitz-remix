@@ -123,6 +123,13 @@ const char* ToString(ShaderKind kind) {
     return "?";
 }
 
+int FindFloatRegister(const FloatRegisters& registers, const char* name) {
+    for (const auto& [constantName, reg] : registers) {
+        if (constantName == name) return reg;
+    }
+    return -1;
+}
+
 bool ParseVertexShader(const DWORD* function, VertexShaderInfo& out) {
     out = {};
     std::vector<Constant> constants;
@@ -130,6 +137,7 @@ bool ParseVertexShader(const DWORD* function, VertexShaderInfo& out) {
 
     for (const Constant& constant : constants) {
         out.constants.push_back(constant.name);
+        if (constant.registerSet == kRegisterSetFloat4) out.floatRegisters.emplace_back(constant.name, constant.registerIndex);
 
         const CtabType* type = constant.type;
         const bool isMatrix4x4 = type && constant.registerSet == kRegisterSetFloat4 &&
@@ -162,6 +170,7 @@ bool ParsePixelShader(const DWORD* function, PixelShaderInfo& out) {
 
     for (const Constant& constant : constants) {
         out.constants.push_back(constant.name);
+        if (constant.registerSet == kRegisterSetFloat4) out.floatRegisters.emplace_back(constant.name, constant.registerIndex);
         if (constant.registerSet != kRegisterSetSampler) continue;
 
         // Sampler arrays (e.g. LightMapTextures[3]) take one register per element

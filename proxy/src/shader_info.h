@@ -30,17 +30,25 @@ struct MatrixConstant {
     bool IsValid() const { return reg >= 0; }
 };
 
+// Float constants (c#) by name: (name, first register)
+using FloatRegisters = std::vector<std::pair<std::string, int>>;
+
+// First register of a float constant, or -1 if the shader does not use it
+int FindFloatRegister(const FloatRegisters& registers, const char* name);
+
 struct VertexShaderInfo {
     int id = 0; // assigned by the proxy, for logs
     ShaderKind kind = ShaderKind::Screen;
     MatrixConstant viewProjection;
     MatrixConstant localToWorld;
+    FloatRegisters floatRegisters;
     std::vector<std::string> constants; // all constant names, for logging
 };
 
 struct PixelShaderInfo {
     int id = 0; // assigned by the proxy, for logs
     std::vector<std::string> samplers;  // sampler name by register (s#); empty if unused
+    FloatRegisters floatRegisters;
     std::vector<std::string> constants; // all constant names, for logging
 };
 

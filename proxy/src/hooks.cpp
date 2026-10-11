@@ -8,10 +8,12 @@
 
 #include "camera.h"
 #include "config.h"
+#include "light_conversion.h"
 #include "log.h"
 #include "shader_info.h"
 #include "texture_analysis.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <d3d9.h>
@@ -21,6 +23,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <winerror.h>
 #include <winnt.h>
 
@@ -47,6 +50,7 @@ namespace slot {
     constexpr int SetVertexShaderConstantF = 94;
     constexpr int CreatePixelShader = 106;
     constexpr int SetPixelShader = 107;
+    constexpr int SetPixelShaderConstantF = 109;
     constexpr int CreateQuery = 118;
 
     constexpr int QueryIssue = 6;
@@ -85,6 +89,7 @@ using SetVertexShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, IDirect
 using SetVertexShaderConstantFFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
 using CreatePixelShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, const DWORD*, IDirect3DPixelShader9**);
 using SetPixelShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, IDirect3DPixelShader9*);
+using SetPixelShaderConstantFFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
 using CreateQueryFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DQUERYTYPE, IDirect3DQuery9**);
 using CreateTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
                                                      IDirect3DTexture9**, HANDLE*);
@@ -110,6 +115,7 @@ SetVertexShaderFn originalSetVertexShader;
 SetVertexShaderConstantFFn originalSetVertexShaderConstantF;
 CreatePixelShaderFn originalCreatePixelShader;
 SetPixelShaderFn originalSetPixelShader;
+SetPixelShaderConstantFFn originalSetPixelShaderConstantF;
 CreateQueryFn originalCreateQuery;
 QueryIssueFn originalQueryIssue;
 CreateTextureFn originalCreateTexture;
@@ -121,6 +127,8 @@ UnlockRectFn originalUnlockRect;
 
 constexpr int kKindCount = 6;
 constexpr UINT kMaxVertexConstants = 256; // vs_3_0
+constexpr UINT kMaxPixelConstants = 224;  // ps_3_0
+constexpr DWORD kMaxEnabledLights = 8;    // D3D9 limit on lights enabled at once
 constexpr DWORD kMaxSamplers = 16;          // ps_3_0
 constexpr DWORD kSamplerStateCount = 14;    // D3DSAMP_ADDRESSU (1) .. D3DSAMP_DMAPOFFSET (13)
 constexpr DWORD kCopiedSamplerStates = 11;  // ADDRESSU .. SRGBTEXTURE: what defines how a texture is sampled
@@ -158,9 +166,20 @@ TextureContent ContentOf(IDirect3DBaseTexture9* texture) {
     return it != textures.info.end() ? it->second.content : TextureContent::Unknown;
 }
 
+// UE3 dynamic lights, read from the light passes and handed to Remix as D3D9 lights
+struct LightState {
+    std::vector<GameLight> seen;     // lights drawn this frame, deduplicated
+    std::vector<D3DLIGHT9> pending;  // last frame's lights, submitted to Remix during this frame
+    size_t next = 0;                 // next entry of `pending` to submit
+    DWORD enabledSlots = 0;          // light slots currently enabled on the device
+    unsigned counts[3] = {};         // last frame: point, spot, directional
+};
+
 // The game uses a single device on one thread
 struct DeviceState {
     float vsConstants[kMaxVertexConstants][4] = {};
+    float psConstants[kMaxPixelConstants][4] = {};
+    LightState lights;
     std::unordered_map<IDirect3DVertexShader9*, VertexShaderInfo> shaders;
     const VertexShaderInfo* currentShader = nullptr;
     std::unordered_map<IDirect3DPixelShader9*, PixelShaderInfo> pixelShaders;
@@ -181,6 +200,7 @@ struct DeviceState {
     IDirect3DSurface9* backBuffer = nullptr;
     UINT backBufferWidth = 0, backBufferHeight = 0;
     bool renderingToBackbuffer = true;
+    bool renderTargetScreenSized = true; // Remix only ray traces draws to screen-sized targets
 
     ShaderKind lastDrawKind = ShaderKind::Screen; // effective kind of the last shader draw
 
@@ -217,6 +237,7 @@ void RememberBackbuffer(IDirect3DDevice9* device) {
     }
     
     state.renderingToBackbuffer = true;
+    state.renderTargetScreenSized = true;
 }
 
 // --- Albedo: Remix uses the texture in stage 0 as albedo ---
@@ -294,6 +315,80 @@ std::string DescribeAlbedo() {
         return "-";
     }
     return shader->samplers[source] + "(" + ToString(ContentOf(state.boundTextures[source])) + ")";
+}
+
+// --- Lights ---
+
+const float* PixelConstant(int reg) {
+    return reg >= 0 && reg < static_cast<int>(kMaxPixelConstants) ? state.psConstants[reg] : nullptr;
+}
+
+const float* VertexConstant(int reg) {
+    return reg >= 0 && reg < static_cast<int>(kMaxVertexConstants) ? state.vsConstants[reg] : nullptr;
+}
+
+// Reads the light of the current light pass from the shader constants
+void CaptureLight() {
+    const VertexShaderInfo* vs = state.currentShader;
+    const PixelShaderInfo* ps = state.currentPixelShader;
+    if (!GetConfig().translateLights || !vs || !ps) return;
+
+    const float* color = PixelConstant(FindFloatRegister(ps->floatRegisters, "LightColorAndFalloffExponent"));
+    if (!color) color = PixelConstant(FindFloatRegister(ps->floatRegisters, "LightColor"));
+    const float* position = VertexConstant(FindFloatRegister(vs->floatRegisters, "LightPositionAndInvRadius"));
+    const float* direction = VertexConstant(FindFloatRegister(vs->floatRegisters, "LightDirection"));
+    const float* spotDirection = PixelConstant(FindFloatRegister(ps->floatRegisters, "SpotDirection"));
+    const float* spotAngles = PixelConstant(FindFloatRegister(ps->floatRegisters, "SpotAngles"));
+    if (!color) return;
+
+    GameLight light;
+    if (position && spotDirection && spotAngles) light = MakeSpotLight(position, color, spotDirection, spotAngles);
+    else if (position) light = MakePointLight(position, color);
+    else if (direction) light = MakeDirectionalLight(direction, color);
+    else return;
+
+    // UE3 draws a light once per object it lights
+    for (const GameLight& seen : state.lights.seen) {
+        if (SameLight(seen, light)) return;
+    }
+    state.lights.seen.push_back(light);
+}
+
+// End of frame: this frame's lights are submitted during the next frame
+void FinishLightFrame() {
+    LightState& lights = state.lights;
+    lights.pending.clear();
+    for (unsigned& count : lights.counts) count = 0;
+    for (const GameLight& light : lights.seen) {
+        D3DLIGHT9 converted;
+        if (!ToD3DLight(light, converted)) continue;
+        lights.pending.push_back(converted);
+        ++lights.counts[static_cast<int>(light.type)];
+    }
+    lights.seen.clear();
+    lights.next = 0;
+}
+
+// D3D9 allows 8 enabled lights, but Remix keeps every light it sees enabled during a ray traced
+// draw. So each ray traced draw gets the next batch of up to 8 until all lights are submitted.
+// Re-submitting every frame keeps Remix from expiring them.
+void SubmitLights(IDirect3DDevice9* device) {
+    LightState& lights = state.lights;
+    if (!GetConfig().translateLights || !state.renderTargetScreenSized) return;
+
+    DWORD count = 0;
+    if (lights.next < lights.pending.size()) {
+        count = static_cast<DWORD>(std::min<size_t>(kMaxEnabledLights, lights.pending.size() - lights.next));
+        for (DWORD i = 0; i < count; ++i) {
+            device->SetLight(i, &lights.pending[lights.next + i]);
+            device->LightEnable(i, TRUE);
+        }
+        lights.next += count;
+    } else if (!lights.pending.empty() || lights.enabledSlots == 0) {
+        return; // all submitted for this frame; leave the last batch enabled
+    }
+    for (DWORD i = count; i < lights.enabledSlots; ++i) device->LightEnable(i, FALSE);
+    lights.enabledSlots = count;
 }
 
 // --- Frame dump ---
@@ -401,6 +496,7 @@ bool PrepareDraw(IDirect3DDevice9* device) {
     switch (effectiveKind) {
         case ShaderKind::Light:
         case ShaderKind::Depth:
+            if (effectiveKind == ShaderKind::Light) CaptureLight();
             if (effectiveKind == ShaderKind::Light ? config.skipLightPasses : config.skipDepthPasses) {
                 draw = false;
                 break;
@@ -417,7 +513,10 @@ bool PrepareDraw(IDirect3DDevice9* device) {
                                         ? ReadMatrixConstant(&state.vsConstants[l2w.reg], l2w.rowMajor)
                                         : Identity();
             SetTransforms(device, world, state.camera.view, state.camera.projection);
-            if (effectiveKind == ShaderKind::World) OverrideAlbedo(device);
+            if (effectiveKind == ShaderKind::World) {
+                OverrideAlbedo(device);
+                SubmitLights(device);
+            }
             break;
         }
         case ShaderKind::Shadow:
@@ -490,6 +589,9 @@ void LogFrameStats() {
     }
     Log("Frame %u albedo: moved %u, cleared %u; textures analysed: %u normal maps, %u other", state.frame,
         s.albedoMoved, s.albedoCleared, normalMaps, colorTextures);
+    const unsigned* lightCounts = state.lights.counts;
+    Log("Frame %u lights: %u point, %u spot, %u directional", state.frame, lightCounts[0], lightCounts[1],
+        lightCounts[2]);
     Log("Frame %u draws: World %u, UI %u, Shadow %u (skipped %u), Screen %u (skipped %u), Depth %u (skipped %u), "
         "Light %u (skipped %u), fixed-function %u, bad camera %u",
         state.frame, s.drawn[0], s.drawn[1], s.drawn[2], s.skipped[2], s.drawn[3], s.skipped[3], s.drawn[4],
@@ -514,6 +616,7 @@ HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMET
 HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window,
                                       const RGNDATA* dirty) {
     ++state.frame;
+    FinishLightFrame();
     const unsigned f = state.frame;
     if (f == 1 || f == 10 || f == 100 || f == 1000 || f % 5000 == 0) LogFrameStats();
     state.stats = {};
@@ -532,6 +635,13 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* sour
                 if (!shader->samplers[i].empty()) samplers += " s" + std::to_string(i) + "=" + shader->samplers[i];
             }
             Log("  PS#%d samplers:%s", shader->id, samplers.c_str());
+        }
+        Log("Lights for the next frame:");
+        for (const D3DLIGHT9& light : state.lights.pending) {
+            Log("  type %d pos (%.0f %.0f %.0f) dir (%.2f %.2f %.2f) color (%.2f %.2f %.2f) range %.0f cone %.0f/%.0f deg",
+                light.Type, light.Position.x, light.Position.y, light.Position.z, light.Direction.x, light.Direction.y,
+                light.Direction.z, light.Diffuse.r, light.Diffuse.g, light.Diffuse.b, light.Range,
+                light.Theta * 57.2958f, light.Phi * 57.2958f);
         }
         Log("End of frame dump");
         state.dumping = false;
@@ -557,8 +667,12 @@ HRESULT STDMETHODCALLTYPE HookStretchRect(IDirect3DDevice9* device, IDirect3DSur
 }
 
 HRESULT STDMETHODCALLTYPE HookSetRenderTarget(IDirect3DDevice9* device, DWORD targetIndex, IDirect3DSurface9* target) {
-    if (targetIndex == 0)
+    if (targetIndex == 0) {
         state.renderingToBackbuffer = target == state.backBuffer;
+        D3DSURFACE_DESC desc = {};
+        if (target) target->GetDesc(&desc);
+        state.renderTargetScreenSized = desc.Width == state.backBufferWidth && desc.Height == state.backBufferHeight;
+    }
     
     return originalSetRenderTarget(device, targetIndex, target);
 }
@@ -666,6 +780,15 @@ HRESULT STDMETHODCALLTYPE HookSetPixelShader(IDirect3DDevice9* device, IDirect3D
     const auto it = shader ? state.pixelShaders.find(shader) : state.pixelShaders.end();
     state.currentPixelShader = it != state.pixelShaders.end() ? &it->second : nullptr;
     return originalSetPixelShader(device, shader);
+}
+
+HRESULT STDMETHODCALLTYPE HookSetPixelShaderConstantF(IDirect3DDevice9* device, UINT start, const float* data,
+                                                      UINT count) {
+    if (data && start < kMaxPixelConstants) {
+        const UINT copied = count < kMaxPixelConstants - start ? count : kMaxPixelConstants - start;
+        memcpy(state.psConstants[start], data, copied * sizeof(float[4]));
+    }
+    return originalSetPixelShaderConstantF(device, start, data, count);
 }
 
 HRESULT STDMETHODCALLTYPE HookQueryIssue(IDirect3DQuery9* query, DWORD flags) {
@@ -800,6 +923,7 @@ HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEV
     PatchVtable(d, slot::SetVertexShaderConstantF, HookSetVertexShaderConstantF, originalSetVertexShaderConstantF);
     PatchVtable(d, slot::CreatePixelShader, HookCreatePixelShader, originalCreatePixelShader);
     PatchVtable(d, slot::SetPixelShader, HookSetPixelShader, originalSetPixelShader);
+    PatchVtable(d, slot::SetPixelShaderConstantF, HookSetPixelShaderConstantF, originalSetPixelShaderConstantF);
     PatchVtable(d, slot::CreateQuery, HookCreateQuery, originalCreateQuery);
     PatchVtable(d, slot::CreateTexture, HookCreateTexture, originalCreateTexture);
     PatchVtable(d, slot::UpdateTexture, HookUpdateTexture, originalUpdateTexture);
