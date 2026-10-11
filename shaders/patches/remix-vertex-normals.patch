@@ -1,0 +1,156 @@
+diff --git a/Engine/Shaders/EmissiveVertexShader.usf b/Engine/Shaders/EmissiveVertexShader.usf
+index a4aeb71..177a2d9 100644
+--- a/Engine/Shaders/EmissiveVertexShader.usf
++++ b/Engine/Shaders/EmissiveVertexShader.usf
+@@ -9,6 +9,9 @@
+ #include "Material.usf"
+ #include "VertexFactory.usf"
+ 
++// RTX Remix: output the vertex normal when an output register is free (11 without PSIZE)
++#define REMIX_OUTPUT_NORMAL (VERTEX_FACTORY_HAS_OBJECT_NORMAL && 1 + VERTEX_FACTORY_INTERPOLANT_REGISTERS + 3 * VERTEX_LIGHTMAP + 3 < 11)
++
+ float4x4 ViewProjectionMatrix REGISTER(252);
+ float4 CameraPosition;
+ 
+@@ -20,6 +23,9 @@ void Main(
+ 	FVertexFactoryInput Input,
+ 	out float4 Position : POSITION,
+ 	out FVertexFactoryInterpolants FactoryInterpolants,
++#if REMIX_OUTPUT_NORMAL
++	out float3 ObjectNormal : NORMAL0, // RTX Remix: vertex normal for ray tracing
++#endif
+ #if VERTEX_LIGHTMAP
+ 	float3 InLightMapA : TEXCOORD5,
+ 	float3 InLightMapB : TEXCOORD6,
+@@ -37,6 +43,9 @@ void Main(
+ 	ScreenPosition = Position = MulMatrix(ViewProjectionMatrix,WorldPosition);
+ 	CameraVector = VertexFactoryWorldToTangentSpace(Input,CameraPosition.xyz - WorldPosition.xyz * CameraPosition.w);
+ 	SkyVector = VertexFactoryWorldToTangentSpace(Input,float3(0,0,1));
++#if REMIX_OUTPUT_NORMAL
++	ObjectNormal = VertexFactoryGetObjectNormal(Input);
++#endif
+ #if VERTEX_LIGHTMAP
+ 	LightMapA = pow( InLightMapA * LightMapScale[0], 2.2 );
+ 	LightMapB = pow( InLightMapB * LightMapScale[1], 2.2 );
+diff --git a/Engine/Shaders/GpuSkinVertexFactory.usf b/Engine/Shaders/GpuSkinVertexFactory.usf
+index 80cc6d9..796a842 100644
+--- a/Engine/Shaders/GpuSkinVertexFactory.usf
++++ b/Engine/Shaders/GpuSkinVertexFactory.usf
+@@ -155,3 +155,13 @@ float3 VertexFactoryWorldToTangentSpace(FVertexFactoryInput Input,half3 WorldVec
+ 	// we use a straight mul here because we are generating the matrix, so we don't worry about column major vs row major (which is what MulMatrix manages per-platform)
+ 	return mul( SkinTangents(Input), MulMatrix( WorldToLocal, WorldVector) );
+ }
++
++// RTX Remix: object-space vertex normal. The base pass and translucency vertex shaders
++// output it as NORMAL0, where Remix vertex capture picks it up.
++#define VERTEX_FACTORY_HAS_OBJECT_NORMAL 1
++// Output registers used by FVertexFactoryInterpolants (vs_3_0 has 11 without PSIZE)
++#define VERTEX_FACTORY_INTERPOLANT_REGISTERS (2 * WORLD_COORDS + NUM_MATERIAL_TEXCOORDS)
++float3 VertexFactoryGetObjectNormal(FVertexFactoryInput Input)
++{
++	return normalize(SkinTangents(Input)[2]);
++}
+diff --git a/Engine/Shaders/LocalVertexFactory.usf b/Engine/Shaders/LocalVertexFactory.usf
+index ecc1fc6..bc94ed7 100644
+--- a/Engine/Shaders/LocalVertexFactory.usf
++++ b/Engine/Shaders/LocalVertexFactory.usf
+@@ -156,3 +156,13 @@ float3 VertexFactoryWorldToTangentSpace(FVertexFactoryInput Input,half3 WorldVec
+ 	// we use a straight mul here because we are generating the matrix, so we don't worry about column major vs row major (which is what MulMatrix manages per-platform)
+ 	return mul(float3x3(Input.TangentX,Input.TangentY,Input.TangentZ) / 127.5 - 1, MulMatrix(WorldToLocal,WorldVector));
+ }
++
++// RTX Remix: object-space vertex normal. The base pass and translucency vertex shaders
++// output it as NORMAL0, where Remix vertex capture picks it up.
++#define VERTEX_FACTORY_HAS_OBJECT_NORMAL 1
++// Output registers used by FVertexFactoryInterpolants (vs_3_0 has 11 without PSIZE)
++#define VERTEX_FACTORY_INTERPOLANT_REGISTERS (2 * WORLD_COORDS + NEEDS_LIGHTMAP_COORDINATE + (NUM_MATERIAL_TEXCOORDS + 1) / 2)
++float3 VertexFactoryGetObjectNormal(FVertexFactoryInput Input)
++{
++	return normalize(Input.TangentZ / 127.5 - 1);
++}
+diff --git a/Engine/Shaders/TerrainDecalVertexFactory.usf b/Engine/Shaders/TerrainDecalVertexFactory.usf
+index c88cdfb..7b1a35a 100644
+--- a/Engine/Shaders/TerrainDecalVertexFactory.usf
++++ b/Engine/Shaders/TerrainDecalVertexFactory.usf
+@@ -167,3 +167,13 @@ float3 VertexFactoryWorldToTangentSpace(FVertexFactoryInput Input,float3 WorldVe
+ {
+ 	return mul(CalcTangentBasis(Input),mul(float4(WorldVector,0),LocalToWorld).xyz);
+ }
++
++// RTX Remix: object-space vertex normal. The base pass and translucency vertex shaders
++// output it as NORMAL0, where Remix vertex capture picks it up.
++#define VERTEX_FACTORY_HAS_OBJECT_NORMAL 1
++// Output registers used by FVertexFactoryInterpolants (vs_3_0 has 11 without PSIZE)
++#define VERTEX_FACTORY_INTERPOLANT_REGISTERS (2 * WORLD_COORDS + 2 + NEEDS_LIGHTMAP_COORDINATE)
++float3 VertexFactoryGetObjectNormal(FVertexFactoryInput Input)
++{
++	return CalcTangentBasis(Input)[2];
++}
+diff --git a/Engine/Shaders/TerrainVertexFactory.usf b/Engine/Shaders/TerrainVertexFactory.usf
+index cdbba60..799e7da 100644
+--- a/Engine/Shaders/TerrainVertexFactory.usf
++++ b/Engine/Shaders/TerrainVertexFactory.usf
+@@ -157,3 +157,13 @@ float3 VertexFactoryWorldToTangentSpace(FVertexFactoryInput Input,float3 WorldVe
+ {
+ 	return mul(CalcTangentBasis(Input),mul(float4(WorldVector,0),LocalToWorld).xyz);
+ }
++
++// RTX Remix: object-space vertex normal. The base pass and translucency vertex shaders
++// output it as NORMAL0, where Remix vertex capture picks it up.
++#define VERTEX_FACTORY_HAS_OBJECT_NORMAL 1
++// Output registers used by FVertexFactoryInterpolants (vs_3_0 has 11 without PSIZE)
++#define VERTEX_FACTORY_INTERPOLANT_REGISTERS (2 * WORLD_COORDS + 2 + NEEDS_LIGHTMAP_COORDINATE)
++float3 VertexFactoryGetObjectNormal(FVertexFactoryInput Input)
++{
++	return CalcTangentBasis(Input)[2];
++}
+diff --git a/Engine/Shaders/TranslucencyVertexShader.usf b/Engine/Shaders/TranslucencyVertexShader.usf
+index 1e5df4e..3d013ca 100644
+--- a/Engine/Shaders/TranslucencyVertexShader.usf
++++ b/Engine/Shaders/TranslucencyVertexShader.usf
+@@ -7,6 +7,9 @@
+ #include "Material.usf"
+ #include "VertexFactory.usf"
+ 
++// RTX Remix: output the vertex normal when an output register is free (11 without PSIZE)
++#define REMIX_OUTPUT_NORMAL (VERTEX_FACTORY_HAS_OBJECT_NORMAL && 1 + VERTEX_FACTORY_INTERPOLANT_REGISTERS + 3 < 11)
++
+ float4x4	ViewProjectionMatrix;
+ float4		CameraPosition;
+ 
+@@ -33,6 +36,9 @@ float4 FogMaxHeight;
+ void Main(
+ 	FVertexFactoryInput Input,
+ 	out FVertexFactoryInterpolants FactoryInterpolants,
++#if REMIX_OUTPUT_NORMAL
++	out float3 ObjectNormal : NORMAL0, // RTX Remix: vertex normal for ray tracing
++#endif
+ 	out float4	Position		: POSITION,
+ 	out float4	ScreenPosition	: TEXCOORD5,
+ 	out float3	CameraVector	: TEXCOORD6,
+@@ -67,4 +73,7 @@ void Main(
+ 
+ 	ScreenPosition = Position = MulMatrix(ViewProjectionMatrix,WorldPosition);
+ 	CameraVector = VertexFactoryWorldToTangentSpace(Input,CameraPosition.xyz - WorldPosition.xyz * CameraPosition.w);
++#if REMIX_OUTPUT_NORMAL
++	ObjectNormal = VertexFactoryGetObjectNormal(Input);
++#endif
+ }
+diff --git a/Engine/Shaders/VertexFactory.usf b/Engine/Shaders/VertexFactory.usf
+index ecc1fc6..bc94ed7 100644
+--- a/Engine/Shaders/VertexFactory.usf
++++ b/Engine/Shaders/VertexFactory.usf
+@@ -156,3 +156,13 @@ float3 VertexFactoryWorldToTangentSpace(FVertexFactoryInput Input,half3 WorldVec
+ 	// we use a straight mul here because we are generating the matrix, so we don't worry about column major vs row major (which is what MulMatrix manages per-platform)
+ 	return mul(float3x3(Input.TangentX,Input.TangentY,Input.TangentZ) / 127.5 - 1, MulMatrix(WorldToLocal,WorldVector));
+ }
++
++// RTX Remix: object-space vertex normal. The base pass and translucency vertex shaders
++// output it as NORMAL0, where Remix vertex capture picks it up.
++#define VERTEX_FACTORY_HAS_OBJECT_NORMAL 1
++// Output registers used by FVertexFactoryInterpolants (vs_3_0 has 11 without PSIZE)
++#define VERTEX_FACTORY_INTERPOLANT_REGISTERS (2 * WORLD_COORDS + NEEDS_LIGHTMAP_COORDINATE + (NUM_MATERIAL_TEXCOORDS + 1) / 2)
++float3 VertexFactoryGetObjectNormal(FVertexFactoryInput Input)
++{
++	return normalize(Input.TangentZ / 127.5 - 1);
++}
