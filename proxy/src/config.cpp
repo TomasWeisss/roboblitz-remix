@@ -19,6 +19,7 @@ Config Load() {
     config.skipScreenPasses = flag(L"SkipScreenPasses", config.skipScreenPasses);
     config.skipShadowPasses = flag(L"SkipShadowPasses", config.skipShadowPasses);
     config.skipDepthPasses = flag(L"SkipDepthPasses", config.skipDepthPasses);
+    config.skipLightPasses = flag(L"SkipLightPasses", config.skipLightPasses);
     config.useLocalToWorld = flag(L"UseLocalToWorld", config.useLocalToWorld);
     config.logShaders = flag(L"LogShaders", config.logShaders);
     config.dumpFrame = GetPrivateProfileIntW(section, L"DumpFrame", config.dumpFrame, path.c_str());

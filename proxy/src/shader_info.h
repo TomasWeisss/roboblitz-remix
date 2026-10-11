@@ -11,8 +11,14 @@ enum class ShaderKind {
     UI,      // canvas / HUD (SimpleElement): has Transform
     Shadow,  // shadow-map depth rendering: has ShadowMatrix
     Screen,  // full-screen passes: post-process, gamma, fog, ...
-    Depth,
+    Depth,   // depth-only, velocity, occlusion query: ViewProjectionMatrix but no CameraPosition
+    Light,   // per-light additive passes: has LightPositionAndInvRadius or LightDirection
 };
+
+// Kinds whose draws get the camera transforms (3D geometry)
+inline bool UsesCamera(ShaderKind kind) {
+    return kind == ShaderKind::World || kind == ShaderKind::Depth || kind == ShaderKind::Light;
+}
 
 const char* ToString(ShaderKind kind);
 

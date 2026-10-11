@@ -88,7 +88,7 @@ SetVertexShaderConstantFFn originalSetVertexShaderConstantF;
 CreateQueryFn originalCreateQuery;
 QueryIssueFn originalQueryIssue;
 
-constexpr int kKindCount = 5;
+constexpr int kKindCount = 6;
 constexpr UINT kMaxVertexConstants = 256; // vs_3_0
 
 struct DrawStats {
@@ -243,8 +243,9 @@ bool PrepareDraw(IDirect3DDevice9* device) {
         return draw;
 
     switch (effectiveKind) {
+        case ShaderKind::Light:
         case ShaderKind::Depth:
-            if (config.skipDepthPasses) {
+            if (effectiveKind == ShaderKind::Light ? config.skipLightPasses : config.skipDepthPasses) {
                 draw = false;
                 break;
             }
@@ -272,9 +273,8 @@ bool PrepareDraw(IDirect3DDevice9* device) {
             break;
     }
 
-    // Everything except world geometry is screen-space: an identity projection is orthographic,
-    // so Remix treats it as UI (rtx.orthographicIsUI) instead of trying to ray trace it
-    if (draw && effectiveKind != ShaderKind::World) 
+    // Everything else is screen-space: give it identity transforms instead of the camera
+    if (draw && !UsesCamera(effectiveKind))
         SetTransforms(device, Identity(), Identity(), Identity());
 
     (draw ? state.stats.drawn : state.stats.skipped)[static_cast<int>(effectiveKind)]++;
@@ -296,10 +296,10 @@ bool BeforeDraw(IDirect3DDevice9* device, unsigned primitives) {
 
 void LogFrameStats() {
     const DrawStats& s = state.stats;
-    Log("Frame %u draws: World %u, UI %u, Shadow %u (skipped %u), Screen %u (skipped %u), fixed-function %u, "
-        "bad camera %u",
-        state.frame, s.drawn[0], s.drawn[1], s.drawn[2], s.skipped[2], s.drawn[3], s.skipped[3], s.fixedFunction,
-        s.badCamera);
+    Log("Frame %u draws: World %u, UI %u, Shadow %u (skipped %u), Screen %u (skipped %u), Depth %u (skipped %u), "
+        "Light %u (skipped %u), fixed-function %u, bad camera %u",
+        state.frame, s.drawn[0], s.drawn[1], s.drawn[2], s.skipped[2], s.drawn[3], s.skipped[3], s.drawn[4],
+        s.skipped[4], s.drawn[5], s.skipped[5], s.fixedFunction, s.badCamera);
 }
 
 // --- Device hooks ---
