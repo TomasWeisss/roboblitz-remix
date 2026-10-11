@@ -54,3 +54,6 @@ shaders/patched/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# --- Machine-specific paths (see local.config.example.psd1) ---
+local.config.psd1
