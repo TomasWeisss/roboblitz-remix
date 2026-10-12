@@ -31,6 +31,7 @@ Needs VS 2022 (C++), CMake, the Remix runtime, and `local.config.psd1` (copy fro
 .\scripts\run.ps1       # launch via Steam; -Direct starts RoboGame.exe (needs Steam.dll, handled)
 ```
 
-Log: `Binaries/roboblitz_remix_proxy.log`. Ctrl+F11 in game dumps every draw of the next frame.
+Log: `Binaries/roboblitz_remix_proxy.log`. Ctrl+F11 in game dumps every draw of the next frame;
+Ctrl+F10 dumps a per-frame summary of the last 600 frames (lights, cameras, draws), flagging outliers.
 Changing shaders, or a missing material map, deletes `LocalShaderCache.upk`, so the next start
 recompiles (slow once) and the proxy rebuilds the map.

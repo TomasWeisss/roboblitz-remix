@@ -138,6 +138,35 @@ struct LightState {
     unsigned counts[3] = {};         // last frame: point, spot, directional
 };
 
+// Frame history: what each recent frame did, dumped on Ctrl+F10 to diagnose one-frame glitches
+constexpr size_t kHistoryFrames = 600;
+constexpr unsigned kMaxRecordedCameras = 4;
+
+// A ViewProjectionMatrix used by drawn 3D geometry during a frame
+struct CameraUse {
+    D3DMATRIX viewProjection;
+    bool valid = false; // decomposed into view and projection
+    float position[3] = {};
+    float fovY = 0;     // degrees
+    float error = 0;    // decomposition error
+    unsigned draws = 0;
+};
+
+struct FrameRecord {
+    unsigned frame = 0;
+    SYSTEMTIME time = {};          // at Present, to match against the Remix log
+    float frameMs = 0;             // since the previous Present
+    DrawStats stats;
+    unsigned raytraceCandidates = 0; // World draws to screen-sized targets
+    unsigned lightsPending = 0;    // captured last frame, to submit during this one
+    unsigned lightsSeen = 0;       // captured from this frame's light passes
+    unsigned lightsSubmitted = 0;  // SetLight calls this frame
+    bool lightsCleared = false;    // all lights were disabled
+    CameraUse cameras[kMaxRecordedCameras];
+    unsigned cameraCount = 0;
+    unsigned otherCameraDraws = 0; // draws with cameras beyond kMaxRecordedCameras
+};
+
 // The game uses a single device on one thread
 struct DeviceState {
     float vsConstants[kMaxVertexConstants][4] = {};
@@ -157,6 +186,7 @@ struct DeviceState {
     D3DMATRIX cameraInput;
     bool cameraInputKnown = false;
     bool cameraInputValid = false;
+    float cameraInputError = 0;
     ViewProjection camera;
     bool hasCamera = false;
     bool cameraLogged = false;
@@ -182,6 +212,11 @@ struct DeviceState {
 
     DrawStats stats;
     unsigned frame = 0;
+
+    FrameRecord record;                // the frame being drawn
+    std::vector<FrameRecord> history;  // ring buffer of finished frames
+    size_t historyNext = 0;            // frames recorded so far
+    LARGE_INTEGER lastPresent = {};
 
     // Frame dump: logs every draw of one frame, merging consecutive identical lines
     bool dumping = false;
@@ -392,6 +427,8 @@ void SubmitLights(IDirect3DDevice9* device) {
     } else if (!lights.pending.empty() || lights.enabledSlots == 0) {
         return; // all submitted for this frame; leave the last batch enabled
     }
+    state.record.lightsSubmitted += count;
+    if (count == 0) state.record.lightsCleared = true;
     for (DWORD i = count; i < lights.enabledSlots; ++i) device->LightEnable(i, FALSE);
     lights.enabledSlots = count;
 }
@@ -472,6 +509,7 @@ bool UpdateCamera(const D3DMATRIX& viewProjection) {
     state.cameraInput = viewProjection;
     state.cameraInputKnown = true;
     state.cameraInputValid = valid;
+    state.cameraInputError = decomposed.error;
     if (valid) {
         state.camera = decomposed;
         state.hasCamera = true;
@@ -486,6 +524,30 @@ bool UpdateCamera(const D3DMATRIX& viewProjection) {
         LogMatrix("Projection", decomposed.projection);
     }
     return valid;
+}
+
+void RecordCamera(const D3DMATRIX& viewProjection, bool valid) {
+    FrameRecord& record = state.record;
+    for (unsigned i = 0; i < record.cameraCount; ++i) {
+        if (SameMatrix(record.cameras[i].viewProjection, viewProjection)) {
+            ++record.cameras[i].draws;
+            return;
+        }
+    }
+    if (record.cameraCount == kMaxRecordedCameras) {
+        ++record.otherCameraDraws;
+        return;
+    }
+    CameraUse& camera = record.cameras[record.cameraCount++];
+    camera = {};
+    camera.viewProjection = viewProjection;
+    camera.valid = valid;
+    camera.error = state.cameraInputError;
+    camera.draws = 1;
+    if (valid) {
+        ViewPosition(state.camera.view, camera.position);
+        camera.fovY = VerticalFovDegrees(state.camera.projection);
+    }
 }
 
 // Sets up transforms for the next draw. Returns false if the draw should be skipped.
@@ -517,7 +579,10 @@ bool PrepareDraw(IDirect3DDevice9* device) {
             [[fallthrough]];
         case ShaderKind::World: {
             const MatrixConstant& vp = shader->viewProjection;
-            if (!UpdateCamera(ReadMatrixConstant(&state.vsConstants[vp.reg], vp.rowMajor))) {
+            const D3DMATRIX viewProjection = ReadMatrixConstant(&state.vsConstants[vp.reg], vp.rowMajor);
+            const bool cameraValid = UpdateCamera(viewProjection);
+            RecordCamera(viewProjection, cameraValid);
+            if (!cameraValid) {
                 ++state.stats.badCamera;
                 if (!state.hasCamera) break;
                 // Keep the last good camera: without camera transforms Remix ray traces nothing
@@ -528,6 +593,7 @@ bool PrepareDraw(IDirect3DDevice9* device) {
                                         : Identity();
             SetTransforms(device, world, state.camera.view, state.camera.projection);
             if (effectiveKind == ShaderKind::World) {
+                if (state.renderTargetScreenSized) ++state.record.raytraceCandidates;
                 OverrideAlbedo(device);
                 SubmitLights(device);
             }
@@ -606,6 +672,112 @@ void LogFrameStats() {
         s.skipped[4], s.drawn[5], s.skipped[5], s.fixedFunction, s.badCamera);
 }
 
+// --- Frame history ---
+
+constexpr int kHistoryKey = VK_F10; // with Ctrl
+
+void FinishFrameRecord(unsigned lightsSeen) {
+    LARGE_INTEGER now, frequency;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+
+    FrameRecord& record = state.record;
+    record.frame = state.frame;
+    GetLocalTime(&record.time);
+    if (state.lastPresent.QuadPart) {
+        record.frameMs = static_cast<float>(now.QuadPart - state.lastPresent.QuadPart) * 1000.0f / frequency.QuadPart;
+    }
+    record.stats = state.stats;
+    record.lightsSeen = lightsSeen;
+
+    if (state.history.empty()) state.history.resize(kHistoryFrames);
+    state.history[state.historyNext++ % kHistoryFrames] = record;
+    state.record = {};
+    state.record.lightsPending = static_cast<unsigned>(state.lights.pending.size());
+    state.lastPresent = now;
+}
+
+// The camera with the most draws, or null
+const CameraUse* MainCamera(const FrameRecord& record) {
+    const CameraUse* main = nullptr;
+    for (unsigned i = 0; i < record.cameraCount; ++i) {
+        const CameraUse& camera = record.cameras[i];
+        if (camera.valid && (!main || camera.draws > main->draws)) main = &camera;
+    }
+    return main;
+}
+
+float Distance(const float a[3], const float b[3]) {
+    const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Logs the recorded frames, oldest first, flagging what differs from the frame before
+void DumpHistory() {
+    const size_t count = std::min(state.historyNext, kHistoryFrames);
+    Log("Frame history: last %zu frames. world = World draws, rt = of those to screen-sized targets; lights: "
+        "pending from the previous frame / seen in light passes / submitted to Remix; cameras: position, "
+        "vertical fov, decomposition error, draws; move = main camera distance from the previous frame",
+        count);
+
+    const FrameRecord* previous = nullptr;
+    float previousMove = 0;
+    unsigned flagged = 0;
+    for (size_t i = state.historyNext - count; i < state.historyNext; ++i) {
+        const FrameRecord& r = state.history[i % kHistoryFrames];
+        const DrawStats& s = r.stats;
+        char text[256];
+        snprintf(text, sizeof(text),
+                 "#%u %02d:%02d:%02d.%03d %5.1fms world %u rt %u ui %u bad %u | lights %u/%u/%u%s |", r.frame,
+                 r.time.wHour, r.time.wMinute, r.time.wSecond, r.time.wMilliseconds, r.frameMs,
+                 s.drawn[static_cast<int>(ShaderKind::World)], r.raytraceCandidates,
+                 s.drawn[static_cast<int>(ShaderKind::UI)], s.badCamera, r.lightsPending, r.lightsSeen,
+                 r.lightsSubmitted, r.lightsCleared ? " cleared" : "");
+        std::string line = text;
+
+        for (unsigned c = 0; c < r.cameraCount; ++c) {
+            const CameraUse& camera = r.cameras[c];
+            if (camera.valid) {
+                snprintf(text, sizeof(text), " (%.0f %.0f %.0f) fov %.2f err %.0e x%u", camera.position[0],
+                         camera.position[1], camera.position[2], camera.fovY, camera.error, camera.draws);
+            } else {
+                snprintf(text, sizeof(text), " REJECTED (last camera kept) err %.0e x%u", camera.error, camera.draws);
+            }
+            line += text;
+        }
+        if (r.otherCameraDraws) line += " +" + std::to_string(r.otherCameraDraws) + " draws with more cameras";
+
+        // Flags
+        std::string flags;
+        const CameraUse* main = MainCamera(r);
+        const CameraUse* previousMain = previous ? MainCamera(*previous) : nullptr;
+        float move = 0;
+        if (main && previousMain) {
+            move = Distance(main->position, previousMain->position);
+            snprintf(text, sizeof(text), " | move %.1f", move);
+            line += text;
+            if (move > 100 && move > 5 * previousMove) flags += " JUMP";
+            if (std::fabs(main->fovY - previousMain->fovY) > 0.5f) flags += " FOV";
+        }
+        if (r.cameraCount + (r.otherCameraDraws ? 1 : 0) > 1) flags += " CAMERAS";
+        if (s.badCamera) flags += " BAD-CAMERA";
+        if (previous && r.raytraceCandidates == 0 && previous->raytraceCandidates > 0) flags += " NO-RT";
+        if (previous && r.lightsSubmitted * 2 < previous->lightsSubmitted) {
+            flags += r.lightsSubmitted == 0 ? " NO-LIGHTS" : " LIGHTS-DROP";
+        }
+        if (previous && r.frameMs > 25 && r.frameMs > 2 * previous->frameMs) flags += " HITCH";
+        if (!flags.empty()) {
+            line += " <<" + flags;
+            ++flagged;
+        }
+
+        Log("  %s", line.c_str());
+        previous = &r;
+        previousMove = move;
+    }
+    Log("End of frame history: %u flagged frames", flagged);
+}
+
 // --- Device hooks ---
 
 HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params) {
@@ -624,7 +796,10 @@ HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMET
 HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window,
                                       const RGNDATA* dirty) {
     ++state.frame;
+    const unsigned lightsSeen = static_cast<unsigned>(state.lights.seen.size());
     FinishLightFrame();
+    FinishFrameRecord(lightsSeen);
+    if ((GetAsyncKeyState(kHistoryKey) & 1) && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) DumpHistory();
     const unsigned f = state.frame;
     if (f == 1 || f == 10 || f == 100 || f == 1000 || f % 5000 == 0) LogFrameStats();
     state.stats = {};

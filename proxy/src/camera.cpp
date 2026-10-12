@@ -109,3 +109,14 @@ bool DecomposeViewProjection(const D3DMATRIX& viewProjection, ViewProjection& ou
     }
     return true;
 }
+
+void ViewPosition(const D3DMATRIX& view, float out[3]) {
+    // p * V = 0 for the camera position p: p = -t * R^T with t the translation row
+    for (int i = 0; i < 3; ++i) {
+        out[i] = -(view.m[3][0] * view.m[i][0] + view.m[3][1] * view.m[i][1] + view.m[3][2] * view.m[i][2]);
+    }
+}
+
+float VerticalFovDegrees(const D3DMATRIX& projection) {
+    return 2.0f * std::atan(1.0f / projection._22) * 57.29578f;
+}

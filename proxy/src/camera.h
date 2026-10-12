@@ -30,3 +30,9 @@ struct ViewProjection {
 //   0   0   b  0
 // Returns false if the matrix is not a perspective projection (e.g. orthographic).
 bool DecomposeViewProjection(const D3DMATRIX& viewProjection, ViewProjection& out);
+
+// Camera position in world space, from a rigid view matrix
+void ViewPosition(const D3DMATRIX& view, float out[3]);
+
+// Vertical field of view of a perspective projection, in degrees
+float VerticalFovDegrees(const D3DMATRIX& projection);
