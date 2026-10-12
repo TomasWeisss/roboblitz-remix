@@ -39,6 +39,7 @@ import hlsl
 REPO = Path(__file__).resolve().parents[2]
 MATCH_THRESHOLD = 3.0  # mean absolute difference (0-255) of 64x64 RGB thumbnails
 MAX_SIZE = 2048
+NORMAL_STRENGTH = 0.5  # the game's normal maps read too strong under path tracing
 
 
 # --- Inputs ---
@@ -236,7 +237,13 @@ def texture_name(texture_hash, kind):
     return f"{texture_hash}_{kind}.png"
 
 
-def bake(material, size, out_dir, texture_hash):
+def scale_normals(normal, strength):
+    """Scales the slope of unit tangent-space normals: 0 is flat, 1 unchanged."""
+    scaled = np.concatenate([normal[..., :2] * strength, np.maximum(normal[..., 2:], 0.0)], axis=-1)
+    return scaled / np.maximum(np.linalg.norm(scaled, axis=-1, keepdims=True), 1e-8)
+
+
+def bake(material, size, out_dir, texture_hash, normal_strength=NORMAL_STRENGTH):
     width, height = size
     name = lambda kind: texture_name(texture_hash, kind)
     shape = (height, width)
@@ -273,6 +280,7 @@ def bake(material, size, out_dir, texture_hash):
         normal = material.evaluate_optional("normal", context, shape)
         if normal is not None:
             normal = normal / np.maximum(np.linalg.norm(normal, axis=-1, keepdims=True), 1e-8)
+            normal = scale_normals(normal, normal_strength)
             save_png(out_dir / name("normal"), normal * 0.5 + 0.5)
             info["normal"] = name("normal")
 
@@ -390,6 +398,8 @@ def main():
     parser.add_argument("--capture", type=Path)
     parser.add_argument("--dump", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--normal-strength", type=float, default=NORMAL_STRENGTH,
+                        help=f"scale of normal map slopes, 0 = flat, 1 = as in the game (default {NORMAL_STRENGTH})")
     args = parser.parse_args()
 
     if not args.capture or not args.dump:
@@ -427,7 +437,7 @@ def main():
                                   f"with most draws ({entries[0]['draws']}), also: {others}")
             counts["collision"] += 1
         try:
-            info = bake(material, material.size(stage0.shape[1::-1]), directory, texture_hash)
+            info = bake(material, material.size(stage0.shape[1::-1]), directory, texture_hash, args.normal_strength)
         except hlsl.Unsupported as error:
             row.update(status="failed", summary=f"shader {entries[0]['shader']}: {error}")
             row["notes"] = material.notes

@@ -22,7 +22,9 @@ functions (normal, specular, ...) and blend mode.
 - `scripts/` — `build.ps1`, `deploy.ps1`, `run.ps1`
 - `tools/material_bake/` — bakes PBR textures (albedo, normal, roughness, emissive) for the materials
   of a Remix capture from a material dump; `pip install -r requirements.txt`, then `python bake.py`
-  (newest capture and dump by default; writes `build/material_bake/<capture>/` with `report.html`)
+  (newest capture and dump by default; writes `build/material_bake/<capture>/` with `report.html`). `python apply.py`
+  (with the Toolkit running and the project open) ingests them into `remix-project/` and writes
+  `generated_materials.usda`, a sublayer of `mod.usda`; edits in `mod.usda` override it
 
 ## Usage
 
