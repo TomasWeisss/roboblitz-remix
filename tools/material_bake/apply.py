@@ -8,10 +8,15 @@
    its sublayers', so anything set by hand in the Toolkit wins over the generated values. Materials
    the mod layer already overrides are left out of the generated layer altogether.
 
+Remix ray traces a draw as a decal (layered over the surface under it instead of z-fighting with
+it) only if it is tagged in rtx.decalTextures and alpha blended. Tagged materials the game draws
+opaque (solid or masked) get an alpha blend in their material instead of the game's.
+
 Rerunning regenerates generated_materials.usda only. Textures whose ingested copy was made from
 the same file are not ingested again.
 
 Usage: python apply.py [--bake build/material_bake] [--project remix-project] [--api URL]
+                       [--rtx-conf game/Binaries/rtx.conf]
 """
 
 import argparse
@@ -95,6 +100,20 @@ class IngestRecord:
         self.path.write_text(json.dumps(self.hashes, indent=1, sort_keys=True), encoding="utf-8")
 
 
+# --- rtx.conf ---
+
+def texture_list(rtx_conf, option):
+    """The texture hashes of a hash-list option (e.g. rtx.decalTextures), as 16 upper-case hex digits.
+    Remix writes hashes with the top bit set as negative numbers."""
+    if not rtx_conf.exists():
+        return set()
+    for line in rtx_conf.read_text(encoding="utf-8").splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() == option:
+            return {f"{int(item.strip(), 16) % (1 << 64):016X}" for item in value.split(",") if item.strip()}
+    return set()
+
+
 # --- Layers ---
 
 def hand_overridden(mod_layer):
@@ -148,6 +167,8 @@ def main():
     parser.add_argument("--bake", type=Path, default=REPO / "build" / "material_bake")
     parser.add_argument("--project", type=Path, default=REPO / "remix-project")
     parser.add_argument("--api", default=API)
+    parser.add_argument("--rtx-conf", type=Path, default=REPO / "game" / "Binaries" / "rtx.conf",
+                        help="for rtx.decalTextures")
     parser.add_argument("--skip-ingest", action="store_true", help="only (re)write the generated layer")
     args = parser.parse_args()
 
@@ -172,6 +193,8 @@ def main():
         sys.exit(f"The Toolkit is not reachable at {args.api}: open the project in it, or use --skip-ingest")
 
     skipped = hand_overridden(Sdf.Layer.FindOrOpen(str(mod_path)))
+    decals = texture_list(args.rtx_conf, "rtx.decalTextures")
+    blended_decals = []
     materials, missing = [], []
     template = material_queue_template(args.api) if not args.skip_ingest else None
     record = IngestRecord(bake / "ingested.json")
@@ -205,12 +228,19 @@ def main():
             inputs["enable_emission"] = (Sdf.ValueTypeNames.Bool, True)
             inputs["emissive_intensity"] = (Sdf.ValueTypeNames.Float,
                                             float(info.get("emissiveIntensity", 1.0)) * EMISSIVE_SCALE)
+        if inputs and texture_hash in decals and info.get("blend") in ("solid", "masked"):
+            # blend_type defaults to Alpha: the albedo alpha (1, or the mask) is the opacity
+            inputs["use_legacy_alpha_state"] = (Sdf.ValueTypeNames.Bool, False)
+            inputs["blend_enabled"] = (Sdf.ValueTypeNames.Bool, True)
+            blended_decals.append(texture_hash)
         if inputs:
             materials.append((texture_hash, inputs))
 
     generated_path = project / GENERATED_LAYER
     write_generated_layer(generated_path, materials)
     print(f"Wrote {generated_path.name}: {len(materials)} materials")
+    if blended_decals:
+        print(f"Alpha blended as decals: {', '.join(blended_decals)}")
     print(insert_sublayer(args.api, mod_path, generated_path, toolkit_running))
     if skipped:
         print(f"Left to mod.usda (overridden by hand): {', '.join(sorted(skipped))}")

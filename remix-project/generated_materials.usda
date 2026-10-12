@@ -69,10 +69,12 @@ over "RootNode"
         {
             over "Shader"
             {
+                bool inputs:blend_enabled = 1
                 asset inputs:diffuse_texture = @./assets/ingested/22F9D7E9640CA5A3_albedo.a.rtex.dds@
                 float inputs:emissive_intensity = 3
                 asset inputs:emissive_mask_texture = @./assets/ingested/22F9D7E9640CA5A3_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
@@ -96,12 +98,38 @@ over "RootNode"
             }
         }
 
+        over "mat_31E52BB49D07441A"
+        {
+            over "Shader"
+            {
+                bool inputs:blend_enabled = 1
+                asset inputs:diffuse_texture = @./assets/ingested/31E52BB49D07441A_albedo.a.rtex.dds@
+                float inputs:emissive_intensity = 2.3311
+                asset inputs:emissive_mask_texture = @./assets/ingested/31E52BB49D07441A_emissive.e.rtex.dds@
+                bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
+            }
+        }
+
+        over "mat_36549F8E819779FD"
+        {
+            over "Shader"
+            {
+                asset inputs:diffuse_texture = @./assets/ingested/36549F8E819779FD_albedo.a.rtex.dds@
+                float inputs:emissive_intensity = 1
+                asset inputs:emissive_mask_texture = @./assets/ingested/36549F8E819779FD_emissive.e.rtex.dds@
+                bool inputs:enable_emission = 1
+                asset inputs:normalmap_texture = @./assets/ingested/36549F8E819779FD_normal_OTH_Normal.n.rtex.dds@
+                asset inputs:reflectionroughness_texture = @./assets/ingested/36549F8E819779FD_roughness.r.rtex.dds@
+            }
+        }
+
         over "mat_414115007425C8A5"
         {
             over "Shader"
             {
                 asset inputs:diffuse_texture = @./assets/ingested/414115007425C8A5_albedo.a.rtex.dds@
-                float inputs:emissive_intensity = 1.1453
+                float inputs:emissive_intensity = 1.3169
                 asset inputs:emissive_mask_texture = @./assets/ingested/414115007425C8A5_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
             }
@@ -171,10 +199,22 @@ over "RootNode"
         {
             over "Shader"
             {
+                bool inputs:blend_enabled = 1
                 asset inputs:diffuse_texture = @./assets/ingested/6AD697FDED789FC4_albedo.a.rtex.dds@
                 float inputs:emissive_intensity = 7.3647
                 asset inputs:emissive_mask_texture = @./assets/ingested/6AD697FDED789FC4_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
+            }
+        }
+
+        over "mat_70FD77D4A444A843"
+        {
+            over "Shader"
+            {
+                asset inputs:diffuse_texture = @./assets/ingested/70FD77D4A444A843_albedo.a.rtex.dds@
+                asset inputs:normalmap_texture = @./assets/ingested/70FD77D4A444A843_normal_OTH_Normal.n.rtex.dds@
+                asset inputs:reflectionroughness_texture = @./assets/ingested/70FD77D4A444A843_roughness.r.rtex.dds@
             }
         }
 
@@ -182,10 +222,12 @@ over "RootNode"
         {
             over "Shader"
             {
+                bool inputs:blend_enabled = 1
                 asset inputs:diffuse_texture = @./assets/ingested/7520D53AF50749B8_albedo.a.rtex.dds@
                 float inputs:emissive_intensity = 3
                 asset inputs:emissive_mask_texture = @./assets/ingested/7520D53AF50749B8_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
@@ -196,6 +238,29 @@ over "RootNode"
                 asset inputs:diffuse_texture = @./assets/ingested/7795F5146DF55EC4_albedo.a.rtex.dds@
                 asset inputs:normalmap_texture = @./assets/ingested/7795F5146DF55EC4_normal_OTH_Normal.n.rtex.dds@
                 asset inputs:reflectionroughness_texture = @./assets/ingested/7795F5146DF55EC4_roughness.r.rtex.dds@
+            }
+        }
+
+        over "mat_854B6389A39E2219"
+        {
+            over "Shader"
+            {
+                asset inputs:diffuse_texture = @./assets/ingested/854B6389A39E2219_albedo.a.rtex.dds@
+                asset inputs:normalmap_texture = @./assets/ingested/854B6389A39E2219_normal_OTH_Normal.n.rtex.dds@
+                asset inputs:reflectionroughness_texture = @./assets/ingested/854B6389A39E2219_roughness.r.rtex.dds@
+            }
+        }
+
+        over "mat_875F2CCAB700B4F6"
+        {
+            over "Shader"
+            {
+                asset inputs:diffuse_texture = @./assets/ingested/875F2CCAB700B4F6_albedo.a.rtex.dds@
+                float inputs:emissive_intensity = 1
+                asset inputs:emissive_mask_texture = @./assets/ingested/875F2CCAB700B4F6_emissive.e.rtex.dds@
+                bool inputs:enable_emission = 1
+                asset inputs:normalmap_texture = @./assets/ingested/875F2CCAB700B4F6_normal_OTH_Normal.n.rtex.dds@
+                asset inputs:reflectionroughness_texture = @./assets/ingested/875F2CCAB700B4F6_roughness.r.rtex.dds@
             }
         }
 
@@ -219,6 +284,19 @@ over "RootNode"
             }
         }
 
+        over "mat_9DE2EB04AB4E3C10"
+        {
+            over "Shader"
+            {
+                bool inputs:blend_enabled = 1
+                asset inputs:diffuse_texture = @./assets/ingested/9DE2EB04AB4E3C10_albedo.a.rtex.dds@
+                float inputs:emissive_intensity = 2.3311
+                asset inputs:emissive_mask_texture = @./assets/ingested/9DE2EB04AB4E3C10_emissive.e.rtex.dds@
+                bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
+            }
+        }
+
         over "mat_A104D7A82F691887"
         {
             over "Shader"
@@ -239,6 +317,19 @@ over "RootNode"
                 bool inputs:enable_emission = 1
                 asset inputs:normalmap_texture = @./assets/ingested/A2669FA755932864_normal_OTH_Normal.n.rtex.dds@
                 asset inputs:reflectionroughness_texture = @./assets/ingested/A2669FA755932864_roughness.r.rtex.dds@
+            }
+        }
+
+        over "mat_A9B4F3CF7C75D9AB"
+        {
+            over "Shader"
+            {
+                bool inputs:blend_enabled = 1
+                asset inputs:diffuse_texture = @./assets/ingested/A9B4F3CF7C75D9AB_albedo.a.rtex.dds@
+                float inputs:emissive_intensity = 39.2786
+                asset inputs:emissive_mask_texture = @./assets/ingested/A9B4F3CF7C75D9AB_emissive.e.rtex.dds@
+                bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
@@ -275,10 +366,12 @@ over "RootNode"
         {
             over "Shader"
             {
+                bool inputs:blend_enabled = 1
                 asset inputs:diffuse_texture = @./assets/ingested/B7712170CDC2EB46_albedo.a.rtex.dds@
                 float inputs:emissive_intensity = 3.9913
                 asset inputs:emissive_mask_texture = @./assets/ingested/B7712170CDC2EB46_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
@@ -316,12 +409,14 @@ over "RootNode"
         {
             over "Shader"
             {
+                bool inputs:blend_enabled = 1
                 asset inputs:diffuse_texture = @./assets/ingested/D75492B856BC727A_albedo.a.rtex.dds@
                 float inputs:emissive_intensity = 1
                 asset inputs:emissive_mask_texture = @./assets/ingested/D75492B856BC727A_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
                 asset inputs:normalmap_texture = @./assets/ingested/D75492B856BC727A_normal_OTH_Normal.n.rtex.dds@
                 asset inputs:reflectionroughness_texture = @./assets/ingested/D75492B856BC727A_roughness.r.rtex.dds@
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
@@ -349,9 +444,11 @@ over "RootNode"
         {
             over "Shader"
             {
+                bool inputs:blend_enabled = 1
                 asset inputs:diffuse_texture = @./assets/ingested/DD5ABF2165F295F5_albedo.a.rtex.dds@
                 asset inputs:normalmap_texture = @./assets/ingested/DD5ABF2165F295F5_normal_OTH_Normal.n.rtex.dds@
                 asset inputs:reflectionroughness_texture = @./assets/ingested/DD5ABF2165F295F5_roughness.r.rtex.dds@
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
@@ -380,7 +477,7 @@ over "RootNode"
             over "Shader"
             {
                 asset inputs:diffuse_texture = @./assets/ingested/E4AB918436018BB8_albedo.a.rtex.dds@
-                float inputs:emissive_intensity = 2
+                float inputs:emissive_intensity = 3
                 asset inputs:emissive_mask_texture = @./assets/ingested/E4AB918436018BB8_emissive.e.rtex.dds@
                 bool inputs:enable_emission = 1
                 asset inputs:normalmap_texture = @./assets/ingested/E4AB918436018BB8_normal_OTH_Normal.n.rtex.dds@
@@ -418,6 +515,19 @@ over "RootNode"
                 asset inputs:diffuse_texture = @./assets/ingested/EF011966918FAE41_albedo.a.rtex.dds@
                 asset inputs:normalmap_texture = @./assets/ingested/EF011966918FAE41_normal_OTH_Normal.n.rtex.dds@
                 asset inputs:reflectionroughness_texture = @./assets/ingested/EF011966918FAE41_roughness.r.rtex.dds@
+            }
+        }
+
+        over "mat_EF733EDD86165B91"
+        {
+            over "Shader"
+            {
+                bool inputs:blend_enabled = 1
+                asset inputs:diffuse_texture = @./assets/ingested/EF733EDD86165B91_albedo.a.rtex.dds@
+                float inputs:emissive_intensity = 2
+                asset inputs:emissive_mask_texture = @./assets/ingested/EF733EDD86165B91_emissive.e.rtex.dds@
+                bool inputs:enable_emission = 1
+                bool inputs:use_legacy_alpha_state = 0
             }
         }
 
