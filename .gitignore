@@ -45,6 +45,11 @@ remix-project/**/.deps/
 remix-project/**/.cache/
 remix-project/**/captures/
 remix-project/**/*.tmp
+remix-project/.thumbs/
+# Link into the game install (rtx-remix), made by the Toolkit
+remix-project/deps
+# Textures ingested from game assets; rebuilt by scripts/materials.ps1
+remix-project/assets/ingested/
 
 # --- Original game files (copyrighted; only patches go in shaders/patches) ---
 shaders/original/

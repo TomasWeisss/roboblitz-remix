@@ -19,12 +19,13 @@ functions (normal, specular, ...) and blend mode.
   `config` (ini); tests in `proxy/tests/`
 - `game/` — files copied into the game dir (`rtx.conf`, `roboblitz_remix_proxy.ini` with documented toggles)
 - `shaders/patches/` — patches to the game's `.usf` shaders (originals not committed)
-- `scripts/` — `build.ps1`, `deploy.ps1`, `run.ps1`
-- `tools/material_bake/` — bakes PBR textures (albedo, normal, roughness, emissive) for the materials
-  of a Remix capture from a material dump; `pip install -r requirements.txt`, then `python bake.py`
-  (newest capture and dump by default; writes `build/material_bake/<capture>/` with `report.html`). `python apply.py`
-  (with the Toolkit running and the project open) ingests them into `remix-project/` and writes
-  `generated_materials.usda`, a sublayer of `mod.usda`; edits in `mod.usda` override it
+- `scripts/` — `build.ps1`, `deploy.ps1`, `run.ps1`, `materials.ps1`
+- `tools/material_bake/` — `bake.py` bakes PBR textures (albedo, normal, roughness, emissive) for the
+  materials of all Remix captures from all material dumps into `build/material_bake/` (with
+  `report.html`); `apply.py` ingests them through the running Toolkit and writes
+  `remix-project/generated_materials.usda`, a sublayer of `mod.usda`, whose edits override it
+- `remix-project/` — the Toolkit project. Textures ingested from game assets (`assets/ingested/`) are
+  not committed; `materials.ps1` rebuilds them
 
 ## Usage
 
@@ -35,7 +36,12 @@ Needs VS 2022 (C++), CMake, the Remix runtime, and `local.config.psd1` (copy fro
 .\scripts\deploy.ps1    # build, install proxy + Remix + game\ files + shader patches
                         # (-SkipRuntime, -NoProxy, -NoShaderPatches)
 .\scripts\run.ps1       # launch via Steam; -Direct starts RoboGame.exe (needs Steam.dll, handled)
+.\scripts\materials.ps1 # bake materials from all captures + dumps and apply them to the project
+                        # open in the Toolkit (-BakeOnly, -NormalStrength); sets up .venv once
 ```
+
+New area: in game, take a Remix capture and press Ctrl+F9 (material dump) at the same spot, then
+run `materials.ps1`.
 
 Log: `Binaries/roboblitz_remix_proxy.log`. Ctrl+F11 in game dumps every draw of the next frame;
 Ctrl+F10 dumps a per-frame summary of the last 600 frames (lights, cameras, draws), flagging outliers.

@@ -8,13 +8,14 @@
    its sublayers', so anything set by hand in the Toolkit wins over the generated values. Materials
    the mod layer already overrides are left out of the generated layer altogether.
 
-Rerunning regenerates generated_materials.usda only. Textures already ingested from the same bake
-are not ingested again.
+Rerunning regenerates generated_materials.usda only. Textures whose ingested copy was made from
+the same file are not ingested again.
 
-Usage: python apply.py [--bake build/material_bake/<capture>] [--project remix-project] [--api URL]
+Usage: python apply.py [--bake build/material_bake] [--project remix-project] [--api URL]
 """
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -76,6 +77,24 @@ def ingested_file(output_directory, baked):
     return matches[0] if matches else None
 
 
+class IngestRecord:
+    """Which baked file each ingested texture was made from, kept in the bake directory. File times
+    do not tell (ingestion skips rewriting identical output), and the src_hash ingestion writes to
+    its .meta is of an intermediate file for normal maps."""
+
+    def __init__(self, path):
+        self.path = path
+        self.hashes = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def is_current(self, output_directory, baked):
+        return (ingested_file(output_directory, baked) is not None
+                and self.hashes.get(baked.name) == hashlib.md5(baked.read_bytes()).hexdigest())
+
+    def add(self, baked):
+        self.hashes[baked.name] = hashlib.md5(baked.read_bytes()).hexdigest()
+        self.path.write_text(json.dumps(self.hashes, indent=1, sort_keys=True), encoding="utf-8")
+
+
 # --- Layers ---
 
 def hand_overridden(mod_layer):
@@ -124,22 +143,17 @@ def insert_sublayer(api, mod_path, generated_path, toolkit_running):
 
 # --- Main ---
 
-def newest_bake():
-    bakes = sorted((REPO / "build" / "material_bake").glob("*/report.html"), key=lambda p: p.stat().st_mtime)
-    if not bakes:
-        sys.exit("No bake in build/material_bake; run bake.py first")
-    return bakes[-1].parent
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--bake", type=Path, help="bake output directory (default: newest)")
+    parser.add_argument("--bake", type=Path, default=REPO / "build" / "material_bake")
     parser.add_argument("--project", type=Path, default=REPO / "remix-project")
     parser.add_argument("--api", default=API)
     parser.add_argument("--skip-ingest", action="store_true", help="only (re)write the generated layer")
     args = parser.parse_args()
 
-    bake = args.bake or newest_bake()
+    bake = args.bake
+    if not (bake / "report.html").exists():
+        sys.exit(f"No bake in {bake}; run bake.py first")
     project = args.project.resolve()
     mod_path = project / "mod.usda"
     output_directory = project / "assets" / "ingested"
@@ -160,6 +174,7 @@ def main():
     skipped = hand_overridden(Sdf.Layer.FindOrOpen(str(mod_path)))
     materials, missing = [], []
     template = material_queue_template(args.api) if not args.skip_ingest else None
+    record = IngestRecord(bake / "ingested.json")
     directories = sorted(d for d in bake.iterdir() if (d / "material.json").exists())
     for number, directory in enumerate(directories, 1):
         texture_hash = directory.name
@@ -169,10 +184,12 @@ def main():
         baked = {kind: directory / info[kind] for kind in KINDS if info.get(kind)}
 
         stale = [(path, KINDS[kind][0]) for kind, path in baked.items()
-                 if not (out := ingested_file(output_directory, path)) or out.stat().st_mtime < path.stat().st_mtime]
+                 if not record.is_current(output_directory, path)]
         if stale and not args.skip_ingest:
             started = time.time()
             ingest(args.api, template, stale, output_directory)
+            for path, _ in stale:
+                record.add(path)
             print(f"[{number}/{len(directories)}] {texture_hash}: ingested {len(stale)} textures "
                   f"({time.time() - started:.0f} s)")
 

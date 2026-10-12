@@ -1,4 +1,4 @@
-"""Bakes PBR textures for the materials of a Remix capture from a proxy material dump.
+"""Bakes PBR textures for the materials of Remix captures from proxy material dumps.
 
 Remix keys a material by the texture in stage 0. The proxy's material dump (Ctrl+F9) records, for
 each material drawn, that texture plus everything the game's shader combines into the final look:
@@ -18,13 +18,19 @@ Ingest the normal map with the DirectX convention.
 
 plus report.html to review them side by side with the game's stage 0 texture.
 
-Usage: python bake.py [--capture capture.usd] [--dump dump.json] [--out dir]
-Defaults: the newest capture and dump in the game install (local.config.psd1), output to
-build/material_bake/<capture name>.
+It bakes every material of all captures, matched against all dumps: replacements apply wherever
+their hash appears in the game, not only in the capture the Toolkit project shows. A material found
+in several dumps is baked from the newest. So every area needs one capture and one dump, taken at
+the same spot; both are made by playing (Remix's capture, Ctrl+F9 for the dump).
+
+Usage: python bake.py [--captures capture.usd ...] [--dumps dump.json ...] [--out dir]
+Defaults: all captures and dumps in the game install (local.config.psd1), output to
+build/material_bake.
 """
 
 import argparse
 import html
+import io
 import json
 import os
 import re
@@ -52,11 +58,12 @@ def game_dir():
     return Path(match.group(1))
 
 
-def newest(pattern_dir, pattern):
-    files = sorted(Path(pattern_dir).glob(pattern), key=lambda p: p.stat().st_mtime)
+def all_files(directory, pattern):
+    """Matching files, oldest first."""
+    files = sorted(Path(directory).glob(pattern), key=lambda p: p.stat().st_mtime)
     if not files:
-        sys.exit(f"No {pattern} in {pattern_dir}")
-    return files[-1]
+        sys.exit(f"No {pattern} in {directory}")
+    return files
 
 
 def load_dump(path):
@@ -94,6 +101,16 @@ def load_image(path):
     return _images[key]
 
 
+_thumbnails = {}
+
+
+def file_thumbnail(path):
+    key = str(path)
+    if key not in _thumbnails:
+        _thumbnails[key] = thumbnail(load_image(path))
+    return _thumbnails[key]
+
+
 def thumbnail(image):
     pixels = Image.fromarray((image[..., :3] * 255 + 0.5).astype(np.uint8))
     return np.asarray(pixels.resize((64, 64), Image.BILINEAR), dtype=np.float32)
@@ -111,7 +128,12 @@ def linear_to_srgb(c):
 
 
 def save_png(path, pixels):
-    Image.fromarray((np.clip(pixels, 0, 1) * 255 + 0.5).astype(np.uint8)).save(path)
+    """Writes only if the content changed: apply.py re-ingests files newer than their ingested copy."""
+    buffer = io.BytesIO()
+    Image.fromarray((np.clip(pixels, 0, 1) * 255 + 0.5).astype(np.uint8)).save(buffer, format="PNG")
+    data = buffer.getvalue()
+    if not path.exists() or path.read_bytes() != data:
+        path.write_bytes(data)
 
 
 # --- Sampling ---
@@ -309,24 +331,28 @@ def bake(material, size, out_dir, texture_hash, normal_strength=NORMAL_STRENGTH)
 
 # --- Matching and the report ---
 
-def match(captured, dump, dump_dir):
-    """Capture material hash -> dumped materials whose stage 0 texture it is (best first)."""
-    thumbs = {h: thumbnail(load_image(p)) for h, p in captured.items() if p.exists()}
-    matches = {h: [] for h in captured}
+def match(captured, dumps):
+    """Capture material hash -> (dump path, dumped materials whose stage 0 texture it is, most draws
+    first), from the newest dump that has it. dumps: [(path, dump)], newest first."""
+    thumbs = {h: file_thumbnail(p) for h, p in captured.items() if p.exists()}
+    matches = {}
     unmatched = []
-    for index, entry in enumerate(dump["materials"]):
-        texture = entry.get("stage0Texture") or {}
-        if not texture.get("file"):
-            unmatched.append((index, entry, "stage 0 texture has no data"))
-            continue
-        thumb = thumbnail(load_image(dump_dir / texture["file"]))
-        scored = sorted((float(np.abs(thumb - t).mean()), h) for h, t in thumbs.items())
-        if scored and scored[0][0] <= MATCH_THRESHOLD:
-            matches[scored[0][1]].append(entry)
-        else:
-            unmatched.append((index, entry, "not in the capture"))
-    for entries in matches.values():
-        entries.sort(key=lambda e: -e["draws"])
+    for path, dump in dumps:
+        found = {}
+        for index, entry in enumerate(dump["materials"]):
+            texture = entry.get("stage0Texture") or {}
+            if not texture.get("file"):
+                unmatched.append((path.name, index, entry, "stage 0 texture has no data"))
+                continue
+            thumb = file_thumbnail(path.parent / texture["file"])
+            scored = sorted((float(np.abs(thumb - t).mean()), h) for h, t in thumbs.items())
+            if scored and scored[0][0] <= MATCH_THRESHOLD:
+                found.setdefault(scored[0][1], []).append(entry)
+            else:
+                unmatched.append((path.name, index, entry, "in no capture"))
+        for texture_hash, entries in found.items():
+            if texture_hash not in matches:
+                matches[texture_hash] = (path, sorted(entries, key=lambda e: -e["draws"]))
     return matches, unmatched
 
 
@@ -361,7 +387,8 @@ def write_report(out, rows, unmatched):
         parts.append(
             f'<section class="{row["status"]}"><h2>mat_{row["hash"]} <span>{html.escape(row["summary"])}</span></h2>'
             f'<div class="figures">{figures}</div><ul>{notes}</ul></section>')
-    lost = "".join(f"<li>dump #{i} shader {e['shader']}: {html.escape(reason)}</li>" for i, e, reason in unmatched)
+    lost = "".join(f"<li>{html.escape(name)} #{i} shader {e['shader']}: {html.escape(reason)}</li>"
+                   for name, i, e, reason in unmatched)
     page = f"""<!doctype html>
 <meta charset="utf-8">
 <title>Material bake</title>
@@ -395,24 +422,27 @@ ul {{ margin: 8px 0 0; padding-left: 18px; color: var(--muted); }}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--capture", type=Path)
-    parser.add_argument("--dump", type=Path)
-    parser.add_argument("--out", type=Path)
+    parser.add_argument("--captures", type=Path, nargs="+")
+    parser.add_argument("--dumps", type=Path, nargs="+")
+    parser.add_argument("--out", type=Path, default=REPO / "build" / "material_bake")
     parser.add_argument("--normal-strength", type=float, default=NORMAL_STRENGTH,
                         help=f"scale of normal map slopes, 0 = flat, 1 = as in the game (default {NORMAL_STRENGTH})")
     args = parser.parse_args()
 
-    if not args.capture or not args.dump:
+    if not args.captures or not args.dumps:
         binaries = game_dir() / "Binaries"
-        args.capture = args.capture or newest(binaries / "rtx-remix" / "captures", "capture_*.usd")
-        args.dump = args.dump or newest(binaries / "roboblitz_remix_material_dumps", "*.json")
-    out = args.out or REPO / "build" / "material_bake" / args.capture.stem
+        args.captures = args.captures or all_files(binaries / "rtx-remix" / "captures", "capture_*.usd")
+        args.dumps = args.dumps or all_files(binaries / "roboblitz_remix_material_dumps", "*.json")
+    out = args.out
     out.mkdir(parents=True, exist_ok=True)
-    print(f"Capture {args.capture}\nDump    {args.dump}\nOutput  {out}")
+    print(f"{len(args.captures)} captures, {len(args.dumps)} dumps -> {out}")
 
-    captured = capture_materials(args.capture)
-    dump = load_dump(args.dump)
-    matches, unmatched = match(captured, dump, args.dump.parent)
+    # Later captures win: same hash, same texture, but a newer file
+    captured = {}
+    for capture in sorted(args.captures, key=lambda p: p.stat().st_mtime):
+        captured.update(capture_materials(capture))
+    dumps = [(path, load_dump(path)) for path in sorted(args.dumps, key=lambda p: -p.stat().st_mtime)]
+    matches, unmatched = match(captured, dumps)
 
     rows, counts = [], {"baked": 0, "collision": 0, "failed": 0, "missing": 0}
     for texture_hash, texture_path in sorted(captured.items()):
@@ -420,15 +450,16 @@ def main():
         directory.mkdir(exist_ok=True)
         stage0 = load_image(texture_path)
         save_png(directory / "stage0.png", stage0)
-        entries = matches[texture_hash]
+        dump_path, entries = matches.get(texture_hash, (None, []))
         row = {"hash": texture_hash, "notes": [], "status": "ok"}
+        (directory / "material.json").unlink(missing_ok=True)  # apply.py takes what this run baked
         if not entries:
             row.update(status="failed", summary="no dumped material")
             counts["missing"] += 1
             rows.append(row)
             continue
 
-        material = Material(entries[0], args.dump.parent)
+        material = Material(entries[0], dump_path.parent)
         variants = {signature(e) for e in entries}
         if len(variants) > 1:
             row["status"] = "collision"
@@ -445,7 +476,8 @@ def main():
             rows.append(row)
             continue
         counts["baked"] += 1
-        info.update(shader=entries[0]["shader"], draws=entries[0]["draws"], notes=material.notes,
+        info.update(dump=dump_path.name, shader=entries[0]["shader"], draws=entries[0]["draws"],
+                    notes=material.notes,
                     stage0=entries[0].get("stage0"), sharedWith=[e["shader"] for e in entries[1:]])
         (directory / "material.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         row["summary"] = f"shader {entries[0]['shader']}, {info['blend']}, {info['lighting']}"
