@@ -50,6 +50,7 @@ struct VertexShaderInfo {
 
 struct PixelShaderInfo {
     int id = 0; // assigned by the proxy, for logs
+    uint64_t hash = 0; // HashShaderBytecode: the material map key
     std::vector<std::string> samplers;  // sampler name by register (s#); empty if unused
     FloatRegisters floatRegisters;
     std::vector<std::string> constants; // all constant names, for logging

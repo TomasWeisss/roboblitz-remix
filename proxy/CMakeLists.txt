@@ -20,6 +20,7 @@ add_library(proxy_core STATIC
     src/material_albedo.cpp
     src/material_map.cpp
     src/light_conversion.cpp
+    src/dds.cpp
 )
 target_include_directories(proxy_core PUBLIC src)
 
@@ -30,6 +31,8 @@ add_library(d3d9_proxy SHARED
     src/compiler_hook.cpp
     src/config.cpp
     src/log.cpp
+    src/material_dump.cpp
+    src/texture_capture.cpp
     d3d9.def
 )
 set_target_properties(d3d9_proxy PROPERTIES OUTPUT_NAME d3d9)

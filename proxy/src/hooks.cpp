@@ -11,7 +11,10 @@
 #include "config.h"
 #include "light_conversion.h"
 #include "log.h"
+#include "material_dump.h"
 #include "shader_info.h"
+#include "texture_capture.h"
+#include "vtable.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -52,17 +55,6 @@ namespace slot {
     constexpr int CreateQuery = 118;
 
     constexpr int QueryIssue = 6;
-}
-
-template <typename Fn>
-void PatchVtable(void* object, int index, Fn hook, Fn& original) {
-    void** vtable = *static_cast<void***>(object);
-    if (vtable[index] == reinterpret_cast<void*>(hook)) return; // shared vtable, already patched
-    DWORD protection;
-    VirtualProtect(&vtable[index], sizeof(void*), PAGE_EXECUTE_READWRITE, &protection);
-    original = reinterpret_cast<Fn>(vtable[index]);
-    vtable[index] = reinterpret_cast<void*>(hook);
-    VirtualProtect(&vtable[index], sizeof(void*), protection, &protection);
 }
 
 using CreateDeviceFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS*,
@@ -225,6 +217,8 @@ struct DeviceState {
     unsigned dumpPrimitives = 0;
     std::set<const VertexShaderInfo*> dumpedVertexShaders;
     std::set<const PixelShaderInfo*> dumpedPixelShaders;
+
+    MaterialDump materialDump;
 } state;
 
 void RememberBackbuffer(IDirect3DDevice9* device) {
@@ -359,6 +353,39 @@ std::string DescribeAlbedo() {
         return "-";
     }
     return shader->samplers[source] + (shader->albedoRegister == source ? "" : "(unknown)");
+}
+
+// --- Material dump ---
+
+constexpr int kMaterialDumpKey = VK_F9; // with Ctrl
+
+// Records the material of the current 3D draw, after OverrideAlbedo
+void DumpMaterial(IDirect3DDevice9* device) {
+    const PixelShaderInfo* shader = state.currentPixelShader;
+    DumpedDraw draw;
+    draw.shaderHash = shader->hash;
+    for (size_t reg = 0; reg < shader->samplers.size() && reg < kMaxSamplers; ++reg) {
+        if (shader->samplers[reg].empty()) continue;
+        const DWORD* states = state.samplerStates[reg];
+        draw.samplers.push_back({shader->samplers[reg], state.boundTextures[reg], states[D3DSAMP_ADDRESSU],
+                                 states[D3DSAMP_ADDRESSV], states[D3DSAMP_SRGBTEXTURE] != 0});
+    }
+    for (const auto& [name, reg] : shader->floatRegisters) {
+        const float* value = PixelConstant(reg);
+        if (value) draw.constants.push_back({name, {value[0], value[1], value[2], value[3]}});
+    }
+    if (state.albedoSource == kColorTexture) {
+        draw.stage0 = "color";
+        draw.stage0Texture = state.colorTextures[state.albedoColor];
+    } else {
+        const size_t source = state.albedoSource == kNotOverridden ? 0 : static_cast<size_t>(state.albedoSource);
+        if (source < shader->samplers.size()) draw.stage0 = shader->samplers[source];
+        draw.stage0Texture = state.boundTextures[source];
+    }
+    DWORD alphaBlend = 0;
+    device->GetRenderState(D3DRS_ALPHABLENDENABLE, &alphaBlend);
+    draw.alphaBlend = alphaBlend != 0;
+    state.materialDump.Add(draw);
 }
 
 // --- Lights ---
@@ -643,6 +670,10 @@ const char* PredictRemix(IDirect3DDevice9* device, bool draw) {
 // PrepareDraw plus frame-dump logging
 bool BeforeDraw(IDirect3DDevice9* device, unsigned primitives) {
     const bool draw = PrepareDraw(device);
+    if (draw && state.materialDump.Active() && state.activeOcclusionQueries == 0 && state.currentShader &&
+        state.currentPixelShader && state.lastDrawKind == ShaderKind::World) {
+        DumpMaterial(device);
+    }
     if (state.dumping) {
         const VertexShaderInfo* shader = state.currentShader;
         const PixelShaderInfo* pixelShader = state.currentPixelShader;
@@ -832,6 +863,13 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* sour
         state.dumpedVertexShaders.clear();
         state.dumpedPixelShaders.clear();
     }
+    // Material dump of the next frame on Ctrl+F9
+    state.materialDump.EndFrame(f);
+    if ((GetAsyncKeyState(kMaterialDumpKey) & 1) && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+        if (GetConfig().materialDump) state.materialDump.Request();
+        else Log("Material dump: set MaterialDump=1 in roboblitz_remix_proxy.ini and restart the game");
+    }
+
     // Dump the next frame at the configured frame number, or on Ctrl+F11
     const bool hotkey = (GetAsyncKeyState(kDumpKey) & 1) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
     if (hotkey || f == GetConfig().dumpFrame) {
@@ -956,12 +994,13 @@ HRESULT STDMETHODCALLTYPE HookCreatePixelShader(IDirect3DDevice9* device, const 
     PixelShaderInfo info;
     ParsePixelShader(function, info);
     info.id = state.nextShaderId++;
+    info.hash = HashShaderBytecode(function);
 
     MaterialMap::Entry material;
-    if (GetMaterialMap().Find(HashShaderBytecode(function), material)) {
+    if (GetMaterialMap().Find(info.hash, material)) {
         info.hasMaterial = true;
-        info.albedoExpression = material.source + ": " + material.expression;
-        info.albedo = AnalyzeAlbedo(material.expression);
+        info.albedoExpression = material.albedo + ": " + material.AlbedoExpression();
+        info.albedo = AnalyzeAlbedo(material.AlbedoExpression());
         for (size_t reg = 0; reg < info.samplers.size() && reg < kMaxSamplers; ++reg) {
             if (!info.albedo.sampler.empty() && info.samplers[reg] == info.albedo.sampler) {
                 info.albedoRegister = static_cast<int>(reg);
@@ -1055,6 +1094,7 @@ HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEV
     PatchVtable(d, slot::CreateQuery, HookCreateQuery, originalCreateQuery);
     PatchVtable(d, slot::SetTexture, HookSetTexture, originalSetTexture);
     PatchVtable(d, slot::SetSamplerState, HookSetSamplerState, originalSetSamplerState);
+    if (GetConfig().materialDump) InstallTextureCapture(d);
     return result;
 }
 

@@ -107,14 +107,17 @@ foreach ($relative in $shaderFiles) {
     }
 }
 # 5. The proxy's material map is filled as the game compiles shaders. Rebuild both together when
-#    shaders changed or the map is missing (cached shaders are never compiled again).
+#    shaders changed or the map is missing or from an older proxy (cached shaders are never compiled
+#    again). The header must match MaterialMap::kHeader in proxy\src\material_map.h.
 $shaderCache = Join-Path $config.GameDir 'RoboGame\Content\LocalShaderCache.upk'
 $materialMap = Join-Path $binaries 'roboblitz_remix_materials.txt'
-$mapMissing  = -not $NoProxy -and -not (Test-Path $materialMap)
+$mapHeader   = '# roboblitz-remix material map v2'
+$mapMissing  = -not $NoProxy -and -not ((Test-Path $materialMap) -and
+                                         (Get-Content $materialMap -TotalCount 1) -eq $mapHeader)
 if (($shadersChanged -or $mapMissing) -and (Test-Path $shaderCache)) {
     Remove-Item $shaderCache
     if (Test-Path $materialMap) { Remove-Item $materialMap }
-    $reason = if ($shadersChanged) { 'Shaders changed' } else { 'No material map' }
+    $reason = if ($shadersChanged) { 'Shaders changed' } else { 'No current material map' }
     Write-Host "${reason}: deleted LocalShaderCache.upk, the game recompiles shaders on its next start (slow once)"
 }
 

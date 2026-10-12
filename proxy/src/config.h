@@ -14,6 +14,7 @@ struct Config {
     bool useLocalToWorld = false;              // pass LocalToWorld as WORLD instead of identity
     bool logShaders = false;                   // log every vertex shader's constants on creation
     unsigned dumpFrame = 0;                    // log every draw of the frame after this one (0 = off)
+    bool materialDump = false;                 // keep texture contents; Ctrl+F9 dumps the next frame's materials
 };
 
 // Directory of the proxy DLL, with trailing backslash

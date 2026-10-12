@@ -12,7 +12,9 @@
 #include <windows.h>
 
 #include <cstring>
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <unknwn.h>
 
 namespace {
@@ -79,31 +81,64 @@ bool IsDefined(const D3DXMACRO* defines, const char* name) {
     return false;
 }
 
+// The first of `options` (macro, value) that is defined, else `fallback`
+const char* DefinedValue(const D3DXMACRO* defines, std::initializer_list<std::pair<const char*, const char*>> options,
+                         const char* fallback) {
+    for (const auto& [macro, value] : options) {
+        if (IsDefined(defines, macro)) return value;
+    }
+    return fallback;
+}
+
 void RecordMaterial(const std::string& material, const D3DXMACRO* defines, ID3DXBuffer* shader) {
     const uint64_t hash = HashShaderBytecode(static_cast<const DWORD*>(shader->GetBufferPointer()));
     if (!hash) return;
 
-    const bool unlit = IsDefined(defines, "MATERIAL_LIGHTINGMODEL_UNLIT");
-    MaterialMap::Entry entry{unlit ? "emissive" : "diffuse",
-                             ExtractMaterialExpression(material, unlit ? kEmissiveFunction : kDiffuseFunction)};
+    const std::string blend = DefinedValue(defines,
+                                           {{"MATERIALBLENDING_MASKED", "masked"},
+                                            {"MATERIALBLENDING_TRANSLUCENT", "translucent"},
+                                            {"MATERIALBLENDING_ADDITIVE", "additive"},
+                                            {"MATERIALBLENDING_MODULATE", "modulate"}},
+                                           "solid");
+    const std::string lighting = DefinedValue(defines,
+                                              {{"MATERIAL_LIGHTINGMODEL_UNLIT", "unlit"},
+                                               {"MATERIAL_LIGHTINGMODEL_NONDIRECTIONAL", "nondirectional"},
+                                               {"MATERIAL_LIGHTINGMODEL_CUSTOM", "custom"}},
+                                              "phong");
 
-    // A texture-less colour with a textured opacity (e.g. a vertex-coloured fog card with a mask):
-    // the opacity texture carries the shape, and Remix takes alpha from stage 0
-    if (AnalyzeAlbedo(entry.expression).sampler.empty()) {
-        const bool translucent = IsDefined(defines, "MATERIALBLENDING_TRANSLUCENT") ||
-                                 IsDefined(defines, "MATERIALBLENDING_ADDITIVE") ||
-                                 IsDefined(defines, "MATERIALBLENDING_MODULATE");
-        const bool masked = IsDefined(defines, "MATERIALBLENDING_MASKED");
-        const char* opacityFunction = translucent ? "GetMaterialOpacity" : masked ? "GetMaterialMask" : nullptr;
-        if (opacityFunction) {
-            std::string opacity = ExtractMaterialExpression(material, opacityFunction);
-            if (!AnalyzeAlbedo(opacity).sampler.empty()) entry = {translucent ? "opacity" : "mask", std::move(opacity)};
-        }
+    MaterialMap::Entry entry;
+    entry.properties = {{"blend", blend},
+                        {"lighting", lighting},
+                        {"twosided", IsDefined(defines, "MATERIAL_TWOSIDED") ? "1" : "0"}};
+    // Every material function of MaterialTemplate.usf that is compiled in
+    const std::pair<const char*, const char*> functions[] = {
+        {"normal", "GetMaterialNormal"},
+        {"emissive", kEmissiveFunction},
+        {"diffuse", kDiffuseFunction},
+        {"specular", "GetMaterialSpecularColor"},
+        {"specularpower", "GetMaterialSpecularPower"},
+        {"opacity", "GetMaterialOpacity"},
+        {"mask", blend == "masked" ? "GetMaterialMask" : nullptr},
+        {"customlighting", lighting == "custom" ? "GetMaterialCustomLighting" : nullptr},
+    };
+    for (const auto& [name, function] : functions) {
+        if (!function) continue;
+        std::string expression = ExtractMaterialExpression(material, function);
+        if (!expression.empty()) entry.properties.emplace_back(name, std::move(expression));
+    }
+
+    // The albedo: the diffuse colour, or the emissive one for unlit materials (their diffuse colour
+    // is unused). A texture-less colour with a textured opacity (e.g. a vertex-coloured fog card with
+    // a mask): the opacity texture carries the shape, and Remix takes alpha from stage 0.
+    entry.albedo = lighting == "unlit" ? "emissive" : "diffuse";
+    if (AnalyzeAlbedo(entry.AlbedoExpression()).sampler.empty()) {
+        const char* opacity = blend == "masked" ? "mask" : blend == "solid" ? nullptr : "opacity";
+        if (opacity && !AnalyzeAlbedo(entry.Get(opacity)).sampler.empty()) entry.albedo = opacity;
     }
 
     if (Map().Add(hash, entry) && GetConfig().logShaders) {
         Log("Compiled material pixel shader %016llx: %s %s", static_cast<unsigned long long>(hash),
-            entry.source.c_str(), entry.expression.c_str());
+            entry.albedo.c_str(), entry.AlbedoExpression().c_str());
     }
 }
 
@@ -167,6 +202,10 @@ void InstallCompilerHook() {
                                     reinterpret_cast<void*>(&HookCompileShader),
                                     reinterpret_cast<void**>(&originalCompileShader));
     Log("Material map: %zu shaders loaded; D3DXCompileShader %s", loaded, hooked ? "hooked" : "import NOT FOUND");
+    if (Map().Outdated()) {
+        Log("Material map was written by an older proxy and has been reset. Shaders the game loads from its cache "
+            "stay unknown until RoboGame\\Content\\LocalShaderCache.upk is deleted (deploy.ps1 does this).");
+    }
 }
 
 const MaterialMap& GetMaterialMap() { return Map(); }

@@ -2,6 +2,7 @@
 // Usage: proxy_tests [path to RoboGame\Content\LocalShaderCache.upk]
 
 #include "camera.h"
+#include "dds.h"
 #include "light_conversion.h"
 #include "material_albedo.h"
 #include "material_map.h"
@@ -226,18 +227,66 @@ void TestMaterialMap(const char* directory) {
 
     MaterialMap map;
     CHECK(map.Load(widePath) == 0);
-    CHECK(map.Add(0x0123456789abcdefull, {"diffuse", "tex2D(Texture2D_0,uv).rgb"}));
-    CHECK(map.Add(42, {"emissive", "float3(1,0.5,0)"}));
-    CHECK(!map.Add(42, {"diffuse", "float3(0,0,0)"})); // first entry wins
+    CHECK(!map.Outdated());
+    CHECK(map.Add(0x0123456789abcdefull, {"diffuse",
+                                          {{"blend", "masked"},
+                                           {"diffuse", "tex2D(Texture2D_0,uv).rgb"},
+                                           {"mask", "tex2D(Texture2D_0,uv).a - 0.5"},
+                                           {"specularpower", "(15.00000000)"}}}));
+    CHECK(map.Add(42, {"emissive", {{"emissive", "float3(1,0.5,0)"}}}));
+    CHECK(!map.Add(42, {"diffuse", {{"diffuse", "float3(0,0,0)"}}})); // first entry wins
 
     MaterialMap reloaded;
     CHECK(reloaded.Load(widePath) == 2);
     MaterialMap::Entry entry;
-    CHECK(reloaded.Find(0x0123456789abcdefull, entry) && entry.source == "diffuse" &&
-          entry.expression == "tex2D(Texture2D_0,uv).rgb");
-    CHECK(reloaded.Find(42, entry) && entry.source == "emissive" && entry.expression == "float3(1,0.5,0)");
+    CHECK(reloaded.Find(0x0123456789abcdefull, entry) && entry.albedo == "diffuse" &&
+          entry.AlbedoExpression() == "tex2D(Texture2D_0,uv).rgb");
+    CHECK(entry.properties.size() == 4 && entry.Get("blend") == "masked" &&
+          entry.Get("mask") == "tex2D(Texture2D_0,uv).a - 0.5" && entry.Get("specularpower") == "(15.00000000)");
+    CHECK(entry.Get("normal").empty());
+    CHECK(reloaded.Find(42, entry) && entry.albedo == "emissive" && entry.AlbedoExpression() == "float3(1,0.5,0)");
     CHECK(!reloaded.Find(43, entry));
+
+    // A file from an older proxy (no header) is started afresh
     std::remove(path.c_str());
+    std::ofstream(path) << "0123456789abcdef\tdiffuse\ttex2D(Texture2D_0,uv).rgb\n";
+    MaterialMap old;
+    CHECK(old.Load(widePath) == 0);
+    CHECK(old.Outdated());
+    MaterialMap rewritten;
+    CHECK(rewritten.Load(widePath) == 0);
+    CHECK(!rewritten.Outdated());
+    std::remove(path.c_str());
+}
+
+void TestDds() {
+    LevelLayout layout;
+    CHECK(GetLevelLayout(D3DFMT_DXT1, 512, 256, layout) && layout.rowBytes == 128 * 8 && layout.rows == 64);
+    CHECK(GetLevelLayout(D3DFMT_DXT5, 2, 6, layout) && layout.rowBytes == 16 && layout.rows == 2);
+    CHECK(GetLevelLayout(D3DFMT_A8R8G8B8, 3, 2, layout) && layout.Size() == 24);
+    CHECK(!GetLevelLayout(D3DFMT_UNKNOWN, 4, 4, layout));
+    CHECK(std::strcmp(FormatName(D3DFMT_DXT5), "DXT5") == 0);
+    CHECK(std::strcmp(FormatName(D3DFORMAT(9999)), "9999") == 0);
+
+    auto field = [](const std::vector<uint8_t>& file, size_t offset) {
+        uint32_t value = 0;
+        std::memcpy(&value, &file[offset], 4);
+        return value;
+    };
+    // Header offsets (after the 4-byte magic): height 12, width 16, pitch/linear size 20,
+    // pixel format flags 80, FourCC 84, bit count 88, masks 92..104
+    const std::vector<uint8_t> blocks(2 * 8, 0xAB);
+    std::vector<uint8_t> dds = MakeDds(D3DFMT_DXT1, 8, 4, blocks.data(), blocks.size());
+    CHECK(dds.size() == 128 + 16 && std::memcmp(dds.data(), "DDS ", 4) == 0);
+    CHECK(field(dds, 4) == 124 && field(dds, 12) == 4 && field(dds, 16) == 8 && field(dds, 20) == 16);
+    CHECK(field(dds, 80) == 0x4 && std::memcmp(&dds[84], "DXT1", 4) == 0 && dds[128] == 0xAB);
+
+    const std::vector<uint8_t> pixels(4 * 4, 0);
+    dds = MakeDds(D3DFMT_A8R8G8B8, 2, 2, pixels.data(), pixels.size());
+    CHECK(dds.size() == 128 + 16 && field(dds, 20) == 8 && field(dds, 80) == 0x41 && field(dds, 88) == 32);
+    CHECK(field(dds, 92) == 0xFF0000 && field(dds, 104) == 0xFF000000);
+
+    CHECK(MakeDds(D3DFMT_DXT1, 8, 4, blocks.data(), 8).empty()); // too little data
 }
 
 void TestLightConversion() {
@@ -358,6 +407,7 @@ int main(int argc, char** argv) {
     TestHashShaderBytecode();
     TestMaterialMap(TempDirectory().c_str());
     TestLightConversion();
+    TestDds();
     if (argc > 1) TestShaderCache(argv[1]);
 
     std::printf(failures ? "%d check(s) failed\n" : "All tests passed\n", failures);

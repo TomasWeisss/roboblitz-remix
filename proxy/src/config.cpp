@@ -25,6 +25,7 @@ Config Load() {
     config.useLocalToWorld = flag(L"UseLocalToWorld", config.useLocalToWorld);
     config.logShaders = flag(L"LogShaders", config.logShaders);
     config.dumpFrame = GetPrivateProfileIntW(section, L"DumpFrame", config.dumpFrame, path.c_str());
+    config.materialDump = flag(L"MaterialDump", config.materialDump);
     return config;
 }
 
