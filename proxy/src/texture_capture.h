@@ -19,11 +19,13 @@ struct CapturedTexture {
     std::vector<uint8_t> level0; // tightly packed (GetLevelLayout)
 };
 
-// Hooks the device's CreateTexture and, through the first texture, LockRect/UnlockRect
+// Hooks the device's CreateTexture and UpdateTexture and, through the first texture, the
+// LockRect/UnlockRect of textures and surfaces
 void InstallTextureCapture(IDirect3DDevice9* device);
 
 // Diagnostics for a texture that was not captured: its locks that were not, e.g.
-// "L1 f0 hr0 p2048" (level, flags, " rect" if partial, result, pitch); "never locked"
+// "L1 f0 hr0 p2048" (level, flags, " rect" if partial, result, pitch; level 99: through a surface
+// other than the top level); "never locked"
 std::string DescribeTextureLocks(IDirect3DBaseTexture9* texture);
 
 // The texture's top level as last written by the game; null if never written (render targets,
