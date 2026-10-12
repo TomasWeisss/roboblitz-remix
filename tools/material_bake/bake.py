@@ -6,11 +6,15 @@ material code, all bound textures and the constant values. This script matches e
 material to its dumped material by the stage 0 texture's pixels, evaluates the material functions
 over the texture's UV space and writes, per material hash:
 
-    albedo.png     diffuse colour (sRGB), alpha = opacity or opacity mask
-    normal_dx.png  tangent-space normal, DirectX convention (as UE3 uses)
-    roughness.png  from specular power and specular colour
-    emissive.png   emissive colour (sRGB), only if the material emits; scale in material.json
+    <hash>_albedo.png     diffuse colour (sRGB), alpha = opacity or opacity mask
+    <hash>_normal.png     tangent-space normal, DirectX convention (as UE3 uses)
+    <hash>_roughness.png  from specular power and specular colour
+    <hash>_emissive.png   emissive colour (sRGB), only if the material emits; scale in material.json
     material.json  where it came from and what was approximated
+
+Texture files are prefixed with the material hash (<hash>_albedo.png, ...): the Toolkit's ingestion
+groups its inputs and names its outputs by file name, so names must be unique across materials.
+Ingest the normal map with the DirectX convention.
 
 plus report.html to review them side by side with the game's stage 0 texture.
 
@@ -228,8 +232,13 @@ def luminance(rgb):
     return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
 
 
-def bake(material, size, out_dir):
+def texture_name(texture_hash, kind):
+    return f"{texture_hash}_{kind}.png"
+
+
+def bake(material, size, out_dir, texture_hash):
     width, height = size
+    name = lambda kind: texture_name(texture_hash, kind)
     shape = (height, width)
     context = material.context(width, height)
     blend = material.get("blend") or "solid"
@@ -257,14 +266,15 @@ def bake(material, size, out_dir):
     elif blend != "solid" and material.get("opacity"):
         alpha = np.clip(material.evaluate("opacity", context, shape)[..., 0], 0.0, 1.0)
 
-    save_png(out_dir / "albedo.png", np.concatenate([linear_to_srgb(albedo), alpha[..., None]], axis=-1))
+    info["albedo"] = name("albedo")
+    save_png(out_dir / name("albedo"), np.concatenate([linear_to_srgb(albedo), alpha[..., None]], axis=-1))
 
     if lighting != "unlit" and material.get("normal"):
         normal = material.evaluate_optional("normal", context, shape)
         if normal is not None:
             normal = normal / np.maximum(np.linalg.norm(normal, axis=-1, keepdims=True), 1e-8)
-            save_png(out_dir / "normal_dx.png", normal * 0.5 + 0.5)
-            info["normal"] = "normal_dx.png"
+            save_png(out_dir / name("normal"), normal * 0.5 + 0.5)
+            info["normal"] = name("normal")
 
     if lighting != "unlit":
         power = material.evaluate_optional("specularpower", context, shape)
@@ -273,8 +283,8 @@ def bake(material, size, out_dir):
         # UE3's default specular colour is a mid grey
         specular = luminance(specular) if specular is not None else np.full(shape, 0.2, np.float32)
         roughness = roughness_from_phong(power, specular)
-        save_png(out_dir / "roughness.png", roughness)
-        info["roughness"] = "roughness.png"
+        save_png(out_dir / name("roughness"), roughness)
+        info["roughness"] = name("roughness")
         info["roughnessRange"] = [round(float(roughness.min()), 3), round(float(roughness.max()), 3)]
 
     if emissive is not None:
@@ -283,8 +293,8 @@ def bake(material, size, out_dir):
         if peak > 1.0 / 255:
             # PNG holds [0, 1]; values above 1 go into the intensity
             scale = max(peak, 1.0)
-            save_png(out_dir / "emissive.png", linear_to_srgb(emissive / scale))
-            info["emissive"] = "emissive.png"
+            save_png(out_dir / name("emissive"), linear_to_srgb(emissive / scale))
+            info["emissive"] = name("emissive")
             info["emissiveIntensity"] = round(scale, 4)
     return info
 
@@ -334,10 +344,10 @@ def write_report(out, rows, unmatched):
         directory = out / row["hash"]
         figures = "".join([
             image(directory / "stage0.png", "game stage 0"),
-            image(directory / "albedo.png", "albedo"),
-            image(directory / "normal_dx.png", "normal"),
-            image(directory / "roughness.png", "roughness"),
-            image(directory / "emissive.png", "emissive"),
+            image(directory / texture_name(row["hash"], "albedo"), "albedo"),
+            image(directory / texture_name(row["hash"], "normal"), "normal"),
+            image(directory / texture_name(row["hash"], "roughness"), "roughness"),
+            image(directory / texture_name(row["hash"], "emissive"), "emissive"),
         ])
         notes = "".join(f"<li>{html.escape(n)}</li>" for n in row["notes"])
         parts.append(
@@ -417,7 +427,7 @@ def main():
                                   f"with most draws ({entries[0]['draws']}), also: {others}")
             counts["collision"] += 1
         try:
-            info = bake(material, material.size(stage0.shape[1::-1]), directory)
+            info = bake(material, material.size(stage0.shape[1::-1]), directory, texture_hash)
         except hlsl.Unsupported as error:
             row.update(status="failed", summary=f"shader {entries[0]['shader']}: {error}")
             row["notes"] = material.notes
