@@ -1,0 +1,83 @@
+#usda 1.0
+(
+    customLayerData = {
+        string lightspeed_game_name = "RoboBlitz"
+        string lightspeed_layer_type = "replacement"
+    }
+    subLayers = [
+        @./generated_materials.usda@
+    ]
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+over "RootNode"
+{
+    over "meshes"
+    {
+        over "mesh_D29F66693426B72B"
+        {
+            def RectLight "RectLight" (
+                prepend apiSchemas = ["ShapingAPI"]
+            )
+            {
+                float3[] extent = [(-5, -5, -0), (5, 5, 0)]
+                float inputs:colorTemperature = 6000
+                bool inputs:enableColorTemperature = 1
+                float inputs:height = 37
+                float inputs:intensity = 30
+                float inputs:shaping:cone:angle = 180
+                float inputs:shaping:cone:softness = 0
+                float inputs:shaping:focus = 0
+                color3f inputs:shaping:focusTint
+                asset inputs:shaping:ies:file
+                float inputs:width = 55
+                double3 xformOp:rotateXYZ = (60, 0, 90)
+                double3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (-35.46481087245775, -0.2879488061880693, -8.263918810789846)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+            }
+        }
+    }
+
+    over "lights"
+    {
+        over "light_C234665C70B3D8F8" (
+            references = None
+        )
+        {
+            float inputs:intensity = 0
+        }
+
+        over "light_228FBBB2ACD5D3F0"
+        {
+            float inputs:intensity = 0
+        }
+
+        over "light_FC61CCBFF4C41B1F" (
+            references = None
+        )
+        {
+            float inputs:intensity = 0
+        }
+
+        over "light_58022F70D00E0119" (
+            references = None
+        )
+        {
+            float inputs:intensity = 0
+        }
+    }
+
+    over "instances"
+    {
+        over "inst_45186EE9DE0A0712_0"
+        {
+            over "mesh"
+            {
+                token visibility = "inherited"
+            }
+        }
+    }
+}
+

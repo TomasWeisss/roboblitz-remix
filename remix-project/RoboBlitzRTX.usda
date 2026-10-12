@@ -1,0 +1,54 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (500, 0, 0)
+                double radius = 500
+            }
+            dictionary Perspective = {
+                double3 position = (6134.0273884802245, -32414.178881862343, -778.1510941233587)
+                double3 target = (5900.414931168826, -32440.341798320384, -803.9731332017423)
+            }
+            dictionary Right = {
+                double3 position = (0, -500, 0)
+                double radius = 500
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 500)
+                double radius = 500
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        string lightspeed_layer_type = "workfile"
+        dictionary omni_layer = {
+            string authoring_layer = "./mod.usda"
+            dictionary locked = {
+                bool "./deps/captures/capture_2026-10-12_13-14-06.usd" = 1
+            }
+        }
+        dictionary renderSettings = {
+        }
+    }
+    endTimeCode = 0
+    metersPerUnit = 1
+    startTimeCode = -1
+    subLayers = [
+        @./mod.usda@,
+        @./deps/captures/capture_2026-10-12_13-14-06.usd@
+    ]
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+over "RootNode"
+{
+    over "meshes"
+    {
+        over "mesh_D29F66693426B72B"
+        {
+            custom string nickname = "Flood light"
+        }
+    }
+}
+
