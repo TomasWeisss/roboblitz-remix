@@ -1,5 +1,6 @@
 // d3d9.dll proxy: loads the real d3d9 (the Remix bridge, renamed) and hooks the device.
 
+#include "compiler_hook.h"
 #include "config.h"
 #include "hooks.h"
 #include "log.h"
@@ -46,4 +47,10 @@ extern "C" IDirect3D9* WINAPI Direct3DCreate9(UINT sdkVersion) {
     IDirect3D9* d3d = real(sdkVersion);
     if (d3d) InstallHooks(d3d);
     return d3d;
+}
+
+// The game imports d3d9.dll, so this runs before it compiles any shader
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) InstallCompilerHook();
+    return TRUE;
 }

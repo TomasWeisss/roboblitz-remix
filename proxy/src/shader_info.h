@@ -2,6 +2,9 @@
 
 #include <windows.h>
 
+#include "material_albedo.h"
+
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,12 @@ struct PixelShaderInfo {
     std::vector<std::string> samplers;  // sampler name by register (s#); empty if unused
     FloatRegisters floatRegisters;
     std::vector<std::string> constants; // all constant names, for logging
+
+    // Albedo of the material the shader was compiled for, from the material map
+    bool hasMaterial = false;      // the shader is in the material map
+    std::string albedoExpression;  // for logs
+    MaterialAlbedo albedo;
+    int albedoRegister = -1;       // sampler register of albedo.sampler; -1 if absent or not sampled
 };
 
 // Parse the D3DX constant table (CTAB comment) of shader bytecode as passed to
@@ -57,3 +66,7 @@ struct PixelShaderInfo {
 // has no constant table.
 bool ParseVertexShader(const DWORD* function, VertexShaderInfo& out);
 bool ParsePixelShader(const DWORD* function, PixelShaderInfo& out);
+
+// Hash (FNV-1a, 64 bit) of shader bytecode up to and including its end token. 0 for bytecode
+// older than shader model 2, whose instruction lengths are not encoded.
+uint64_t HashShaderBytecode(const DWORD* function);

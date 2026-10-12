@@ -17,7 +17,8 @@ add_compile_options(/W4 /permissive-)
 add_library(proxy_core STATIC
     src/shader_info.cpp
     src/camera.cpp
-    src/texture_analysis.cpp
+    src/material_albedo.cpp
+    src/material_map.cpp
     src/light_conversion.cpp
 )
 target_include_directories(proxy_core PUBLIC src)
@@ -26,6 +27,7 @@ target_include_directories(proxy_core PUBLIC src)
 add_library(d3d9_proxy SHARED
     src/main.cpp
     src/hooks.cpp
+    src/compiler_hook.cpp
     src/config.cpp
     src/log.cpp
     d3d9.def

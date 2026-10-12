@@ -7,19 +7,19 @@
 #include "hooks.h"
 
 #include "camera.h"
+#include "compiler_hook.h"
 #include "config.h"
 #include "light_conversion.h"
 #include "log.h"
 #include "shader_info.h"
-#include "texture_analysis.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <d3d9.h>
 #include <d3d9types.h>
+#include <cmath>
 #include <map>
-#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -34,8 +34,6 @@ namespace slot {
     constexpr int CreateDevice = 16;              // IDirect3D9
     constexpr int Reset = 16;                     // IDirect3DDevice9 ...
     constexpr int Present = 17;
-    constexpr int CreateTexture = 23;
-    constexpr int UpdateTexture = 31;
     constexpr int StretchRect = 34;
     constexpr int SetRenderTarget = 37;
     constexpr int Clear = 43;
@@ -54,9 +52,6 @@ namespace slot {
     constexpr int CreateQuery = 118;
 
     constexpr int QueryIssue = 6;
-
-    constexpr int TextureLockRect = 19;   // IDirect3DTexture9
-    constexpr int TextureUnlockRect = 20;
 }
 
 template <typename Fn>
@@ -91,13 +86,8 @@ using CreatePixelShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, const
 using SetPixelShaderFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, IDirect3DPixelShader9*);
 using SetPixelShaderConstantFFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
 using CreateQueryFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DQUERYTYPE, IDirect3DQuery9**);
-using CreateTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
-                                                     IDirect3DTexture9**, HANDLE*);
-using UpdateTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, IDirect3DBaseTexture9*, IDirect3DBaseTexture9*);
 using SetTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, DWORD, IDirect3DBaseTexture9*);
 using SetSamplerStateFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
-using LockRectFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DTexture9*, UINT, D3DLOCKED_RECT*, const RECT*, DWORD);
-using UnlockRectFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DTexture9*, UINT);
 using QueryIssueFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DQuery9*, DWORD);
 
 CreateDeviceFn originalCreateDevice;
@@ -118,12 +108,8 @@ SetPixelShaderFn originalSetPixelShader;
 SetPixelShaderConstantFFn originalSetPixelShaderConstantF;
 CreateQueryFn originalCreateQuery;
 QueryIssueFn originalQueryIssue;
-CreateTextureFn originalCreateTexture;
-UpdateTextureFn originalUpdateTexture;
 SetTextureFn originalSetTexture;
 SetSamplerStateFn originalSetSamplerState;
-LockRectFn originalLockRect;
-UnlockRectFn originalUnlockRect;
 
 constexpr int kKindCount = 6;
 constexpr UINT kMaxVertexConstants = 256; // vs_3_0
@@ -138,33 +124,10 @@ struct DrawStats {
     unsigned skipped[kKindCount] = {};
     unsigned fixedFunction = 0;
     unsigned badCamera = 0;
-    unsigned albedoMoved = 0;   // a material texture was moved into stage 0
-    unsigned albedoCleared = 0; // stage 0 was emptied (only normal maps or a lightmap)
+    unsigned albedoTexture = 0; // the material's albedo texture is in stage 0
+    unsigned albedoColor = 0;   // a texture of the material's albedo colour is in stage 0
+    unsigned albedoUnknown = 0; // stage 0 left as the game set it: shader not in the material map, or unusable
 };
-
-// Content verdicts for textures, filled when the game uploads texel data. Uploads may come
-// from another thread than drawing, so this has its own lock.
-struct TextureState {
-    struct Info {
-        TextureContent content = TextureContent::Unknown;
-        UINT analyzedWidth = 0; // the largest analysed mip level wins
-    };
-    struct PendingLock {
-        const void* bits;
-        INT pitch;
-    };
-
-    std::mutex mutex;
-    std::unordered_map<IDirect3DBaseTexture9*, Info> info;
-    std::map<std::pair<IDirect3DTexture9*, UINT>, PendingLock> locks;
-} textures;
-
-TextureContent ContentOf(IDirect3DBaseTexture9* texture) {
-    if (!texture) return TextureContent::Unknown;
-    std::lock_guard<std::mutex> lock(textures.mutex);
-    const auto it = textures.info.find(texture);
-    return it != textures.info.end() ? it->second.content : TextureContent::Unknown;
-}
 
 // UE3 dynamic lights, read from the light passes and handed to Remix as D3D9 lights
 struct LightState {
@@ -208,9 +171,11 @@ struct DeviceState {
     IDirect3DBaseTexture9* boundTextures[kMaxSamplers] = {};
     DWORD samplerStates[kMaxSamplers][kSamplerStateCount] = {};
 
-    // Stage 0 override for the current draw: the sampler register whose texture is in stage 0
-    // (kNoTexture: stage 0 emptied), or kNotOverridden
+    // Stage 0 override for the current draw: the sampler register whose texture is in stage 0,
+    // kColorTexture (a texture of albedoColor), or kNotOverridden
     int albedoSource = -2;
+    D3DCOLOR albedoColor = 0;
+    std::map<D3DCOLOR, IDirect3DTexture9*> colorTextures; // 1x1 textures by colour
     unsigned activeOcclusionQueries = 0;
 
     DrawStats stats;
@@ -241,9 +206,13 @@ void RememberBackbuffer(IDirect3DDevice9* device) {
 }
 
 // --- Albedo: Remix uses the texture in stage 0 as albedo ---
+//
+// The material map gives each material shader's albedo expression: the texture it samples first
+// goes into stage 0, or, if it samples none, a 1x1 texture of its colour. Shaders not in the map
+// keep whatever the game put into stage 0.
 
 constexpr int kNotOverridden = -2;
-constexpr int kNoTexture = -1;
+constexpr int kColorTexture = -1;
 
 // D3D9 defaults, which Reset also restores
 void ResetSamplerTracking() {
@@ -259,36 +228,70 @@ void ResetSamplerTracking() {
     state.albedoSource = kNotOverridden;
 }
 
-// Picks the sampler register holding the albedo: the first material texture (Texture2D_*)
-// that is not a normal map. Lightmaps and light attenuation textures are never albedo.
-int ChooseAlbedoSampler(const PixelShaderInfo& shader) {
-    bool hasMaterialTexture = false;
-    for (size_t reg = 0; reg < shader.samplers.size() && reg < kMaxSamplers; ++reg) {
-        if (shader.samplers[reg].rfind("Texture2D_", 0) != 0) continue;
-        hasMaterialTexture = true;
-        if (ContentOf(state.boundTextures[reg]) != TextureContent::NormalMap) return static_cast<int>(reg);
+const float* PixelConstant(int reg) {
+    return reg >= 0 && reg < static_cast<int>(kMaxPixelConstants) ? state.psConstants[reg] : nullptr;
+}
+
+// Material colours are linear; Remix reads albedo textures as sRGB
+BYTE ToSrgbByte(float linear) {
+    const float srgb = linear <= 0.0031308f ? linear * 12.92f : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+    return static_cast<BYTE>(std::clamp(srgb, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
+// The current value of a texture-less albedo expression
+bool EvaluateAlbedoColor(const PixelShaderInfo& shader, D3DCOLOR& color) {
+    const UniformLookup uniforms = [&shader](const std::string& name) {
+        return PixelConstant(FindFloatRegister(shader.floatRegisters, name.c_str()));
+    };
+    float rgb[3];
+    if (!EvaluateColor(*shader.albedo.color, uniforms, rgb)) return false;
+    color = D3DCOLOR_ARGB(255, ToSrgbByte(rgb[0]), ToSrgbByte(rgb[1]), ToSrgbByte(rgb[2]));
+    return true;
+}
+
+IDirect3DTexture9* ColorTexture(IDirect3DDevice9* device, D3DCOLOR color) {
+    IDirect3DTexture9*& texture = state.colorTextures[color];
+    if (texture) return texture;
+    if (FAILED(device->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &texture, nullptr))) {
+        texture = nullptr;
+        return nullptr;
     }
-    if (hasMaterialTexture) return kNoTexture; // only normal maps
-    const bool samplesSomething = !shader.samplers.empty() && !shader.samplers[0].empty();
-    return samplesSomething ? kNoTexture : kNotOverridden; // e.g. a lightmap in s0
+    D3DLOCKED_RECT locked;
+    if (SUCCEEDED(texture->LockRect(0, &locked, nullptr, 0))) {
+        *static_cast<D3DCOLOR*>(locked.pBits) = color;
+        texture->UnlockRect(0);
+    }
+    return texture;
 }
 
 void OverrideAlbedo(IDirect3DDevice9* device) {
     const PixelShaderInfo* shader = state.currentPixelShader;
     if (!GetConfig().fixAlbedo || !shader) return;
 
-    const int source = ChooseAlbedoSampler(*shader);
-    if (source == kNotOverridden || source == 0) return;
-
-    originalSetTexture(device, 0, source >= 0 ? state.boundTextures[source] : nullptr);
-    if (source > 0) {
+    const int source = shader->albedoRegister;
+    if (source >= 0) {
+        ++state.stats.albedoTexture;
+        if (source == 0) return; // already in stage 0
+        originalSetTexture(device, 0, state.boundTextures[source]);
         for (DWORD t = 1; t <= kCopiedSamplerStates; ++t) {
             const DWORD value = state.samplerStates[source][t];
             if (value != state.samplerStates[0][t]) originalSetSamplerState(device, 0, D3DSAMPLERSTATETYPE(t), value);
         }
+        state.albedoSource = source;
+        return;
     }
-    state.albedoSource = source;
-    ++(source >= 0 ? state.stats.albedoMoved : state.stats.albedoCleared);
+
+    D3DCOLOR color = 0;
+    IDirect3DTexture9* texture = nullptr;
+    if (shader->albedo.color && EvaluateAlbedoColor(*shader, color)) texture = ColorTexture(device, color);
+    if (!texture) {
+        ++state.stats.albedoUnknown;
+        return;
+    }
+    originalSetTexture(device, 0, texture);
+    state.albedoSource = kColorTexture;
+    state.albedoColor = color;
+    ++state.stats.albedoColor;
 }
 
 // Puts back what the game had in stage 0
@@ -306,22 +309,22 @@ void RestoreAlbedo(IDirect3DDevice9* device) {
     state.albedoSource = kNotOverridden;
 }
 
-// For the frame dump: which texture Remix gets as albedo
+// For the frame dump: what Remix gets as albedo
 std::string DescribeAlbedo() {
+    if (state.albedoSource == kColorTexture) {
+        char text[24];
+        snprintf(text, sizeof(text), "color#%06lx", state.albedoColor & 0xFFFFFF);
+        return text;
+    }
     const PixelShaderInfo* shader = state.currentPixelShader;
     const int source = state.albedoSource == kNotOverridden ? 0 : state.albedoSource;
-    if (source == kNoTexture) return "none";
     if (!shader || static_cast<size_t>(source) >= shader->samplers.size() || shader->samplers[source].empty()) {
         return "-";
     }
-    return shader->samplers[source] + "(" + ToString(ContentOf(state.boundTextures[source])) + ")";
+    return shader->samplers[source] + (shader->albedoRegister == source ? "" : "(unknown)");
 }
 
 // --- Lights ---
-
-const float* PixelConstant(int reg) {
-    return reg >= 0 && reg < static_cast<int>(kMaxPixelConstants) ? state.psConstants[reg] : nullptr;
-}
 
 const float* VertexConstant(int reg) {
     return reg >= 0 && reg < static_cast<int>(kMaxVertexConstants) ? state.vsConstants[reg] : nullptr;
@@ -580,15 +583,9 @@ bool BeforeDraw(IDirect3DDevice9* device, unsigned primitives) {
 
 void LogFrameStats() {
     const DrawStats& s = state.stats;
-    unsigned normalMaps = 0, colorTextures = 0;
-    {
-        std::lock_guard<std::mutex> lock(textures.mutex);
-        for (const auto& entry : textures.info) {
-            ++(entry.second.content == TextureContent::NormalMap ? normalMaps : colorTextures);
-        }
-    }
-    Log("Frame %u albedo: moved %u, cleared %u; textures analysed: %u normal maps, %u other", state.frame,
-        s.albedoMoved, s.albedoCleared, normalMaps, colorTextures);
+    Log("Frame %u albedo: texture %u, colour %u, unknown %u; material map: %zu shaders, %zu colour textures",
+        state.frame, s.albedoTexture, s.albedoColor, s.albedoUnknown, GetMaterialMap().Size(),
+        state.colorTextures.size());
     const unsigned* lightCounts = state.lights.counts;
     Log("Frame %u lights: %u point, %u spot, %u directional", state.frame, lightCounts[0], lightCounts[1],
         lightCounts[2]);
@@ -634,7 +631,8 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* sour
             for (size_t i = 0; i < shader->samplers.size(); ++i) {
                 if (!shader->samplers[i].empty()) samplers += " s" + std::to_string(i) + "=" + shader->samplers[i];
             }
-            Log("  PS#%d samplers:%s", shader->id, samplers.c_str());
+            Log("  PS#%d samplers:%s; albedo %s", shader->id, samplers.c_str(),
+                shader->hasMaterial ? shader->albedoExpression.c_str() : "unknown (not in the material map)");
         }
         Log("Lights for the next frame:");
         for (const D3DLIGHT9& light : state.lights.pending) {
@@ -772,6 +770,18 @@ HRESULT STDMETHODCALLTYPE HookCreatePixelShader(IDirect3DDevice9* device, const 
     PixelShaderInfo info;
     ParsePixelShader(function, info);
     info.id = state.nextShaderId++;
+
+    MaterialMap::Entry material;
+    if (GetMaterialMap().Find(HashShaderBytecode(function), material)) {
+        info.hasMaterial = true;
+        info.albedoExpression = material.source + ": " + material.expression;
+        info.albedo = AnalyzeAlbedo(material.expression);
+        for (size_t reg = 0; reg < info.samplers.size() && reg < kMaxSamplers; ++reg) {
+            if (!info.albedo.sampler.empty() && info.samplers[reg] == info.albedo.sampler) {
+                info.albedoRegister = static_cast<int>(reg);
+            }
+        }
+    }
     state.pixelShaders[*shader] = std::move(info);
     return result;
 }
@@ -825,69 +835,6 @@ HRESULT STDMETHODCALLTYPE HookSetSamplerState(IDirect3DDevice9* device, DWORD sa
     return originalSetSamplerState(device, sampler, type, value);
 }
 
-// Remember where the texel data of a whole mip level is, so UnlockRect can analyse it
-HRESULT STDMETHODCALLTYPE HookLockRect(IDirect3DTexture9* texture, UINT level, D3DLOCKED_RECT* locked,
-                                       const RECT* rect, DWORD flags) {
-    const HRESULT result = originalLockRect(texture, level, locked, rect, flags);
-    if (SUCCEEDED(result) && locked && !rect && !(flags & D3DLOCK_READONLY)) {
-        std::lock_guard<std::mutex> lock(textures.mutex);
-        textures.locks[{texture, level}] = {locked->pBits, locked->Pitch};
-    }
-    return result;
-}
-
-// The game has written the texels: classify them before the data goes away
-HRESULT STDMETHODCALLTYPE HookUnlockRect(IDirect3DTexture9* texture, UINT level) {
-    TextureState::PendingLock pending = {};
-    bool found = false;
-    {
-        std::lock_guard<std::mutex> lock(textures.mutex);
-        const auto it = textures.locks.find({texture, level});
-        if (it != textures.locks.end()) {
-            pending = it->second;
-            found = true;
-            textures.locks.erase(it);
-        }
-    }
-    D3DSURFACE_DESC desc = {};
-    if (found && SUCCEEDED(texture->GetLevelDesc(level, &desc))) {
-        const TextureContent content = ClassifyTexture(desc.Format, desc.Width, desc.Height, pending.bits, pending.pitch);
-        if (content != TextureContent::Unknown) {
-            std::lock_guard<std::mutex> lock(textures.mutex);
-            TextureState::Info& info = textures.info[texture];
-            if (desc.Width >= info.analyzedWidth) info = {content, desc.Width};
-        }
-    }
-    return originalUnlockRect(texture, level);
-}
-
-HRESULT STDMETHODCALLTYPE HookCreateTexture(IDirect3DDevice9* device, UINT width, UINT height, UINT levels,
-                                            DWORD usage, D3DFORMAT format, D3DPOOL pool, IDirect3DTexture9** texture,
-                                            HANDLE* shared) {
-    const HRESULT result = originalCreateTexture(device, width, height, levels, usage, format, pool, texture, shared);
-    if (SUCCEEDED(result) && texture && *texture) {
-        {
-            // A new texture may reuse a released one's address
-            std::lock_guard<std::mutex> lock(textures.mutex);
-            textures.info.erase(*texture);
-        }
-        PatchVtable(*texture, slot::TextureLockRect, HookLockRect, originalLockRect);
-        PatchVtable(*texture, slot::TextureUnlockRect, HookUnlockRect, originalUnlockRect);
-    }
-    return result;
-}
-
-// Uploads through a system-memory staging texture: the destination gets the source's verdict
-HRESULT STDMETHODCALLTYPE HookUpdateTexture(IDirect3DDevice9* device, IDirect3DBaseTexture9* source,
-                                            IDirect3DBaseTexture9* dest) {
-    {
-        std::lock_guard<std::mutex> lock(textures.mutex);
-        const auto it = textures.info.find(source);
-        if (it != textures.info.end()) textures.info[dest] = it->second;
-    }
-    return originalUpdateTexture(device, source, dest);
-}
-
 // --- IDirect3D9 hook ---
 
 HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
@@ -901,11 +848,6 @@ HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEV
         params ? params->BackBufferHeight : 0, params ? params->Windowed : -1);
 
     state = DeviceState{};
-    {
-        std::lock_guard<std::mutex> lock(textures.mutex);
-        textures.info.clear();
-        textures.locks.clear();
-    }
     IDirect3DDevice9* d = *device;
     RememberBackbuffer(d);
     ResetSamplerTracking();
@@ -925,8 +867,6 @@ HRESULT STDMETHODCALLTYPE HookCreateDevice(IDirect3D9* d3d, UINT adapter, D3DDEV
     PatchVtable(d, slot::SetPixelShader, HookSetPixelShader, originalSetPixelShader);
     PatchVtable(d, slot::SetPixelShaderConstantF, HookSetPixelShaderConstantF, originalSetPixelShaderConstantF);
     PatchVtable(d, slot::CreateQuery, HookCreateQuery, originalCreateQuery);
-    PatchVtable(d, slot::CreateTexture, HookCreateTexture, originalCreateTexture);
-    PatchVtable(d, slot::UpdateTexture, HookUpdateTexture, originalUpdateTexture);
     PatchVtable(d, slot::SetTexture, HookSetTexture, originalSetTexture);
     PatchVtable(d, slot::SetSamplerState, HookSetSamplerState, originalSetSamplerState);
     return result;

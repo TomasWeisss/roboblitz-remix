@@ -183,3 +183,23 @@ bool ParsePixelShader(const DWORD* function, PixelShaderInfo& out) {
     }
     return true;
 }
+
+uint64_t HashShaderBytecode(const DWORD* function) {
+    if (!function || ((*function >> 8) & 0xFF) < 2) return 0;
+
+    // Comments carry their length in bits 16-30, instructions (SM2+) in bits 24-27
+    constexpr DWORD kEndToken = 0x0000FFFF;
+    constexpr size_t kMaxTokens = 1 << 20;
+    size_t tokens = 1;
+    while (tokens < kMaxTokens && function[tokens] != kEndToken) {
+        const DWORD token = function[tokens];
+        tokens += 1 + ((token & 0xFFFF) == kCommentOpcode ? (token >> 16) & 0x7FFF : (token >> 24) & 0xF);
+    }
+    if (tokens >= kMaxTokens) return 0;
+    ++tokens; // the end token
+
+    uint64_t hash = 14695981039346656037ull;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(function);
+    for (size_t i = 0; i < tokens * sizeof(DWORD); ++i) hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+}

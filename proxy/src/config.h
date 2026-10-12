@@ -9,7 +9,7 @@ struct Config {
     bool skipShadowPasses = true;              // shadow-map depth rendering
     bool skipDepthPasses = true;                // depth prepass (UE3 draws it with colour writes on)
     bool translateLights = true;                // hand the game's dynamic lights to Remix as D3D9 lights
-    bool fixAlbedo = true;                      // move the material's colour texture into stage 0 for Remix
+    bool fixAlbedo = true;                      // put the material's albedo (material map) into stage 0 for Remix
     bool skipLightPasses = true;                // per-light additive passes; Remix does its own lighting
     bool useLocalToWorld = false;              // pass LocalToWorld as WORLD instead of identity
     bool logShaders = false;                   // log every vertex shader's constants on creation

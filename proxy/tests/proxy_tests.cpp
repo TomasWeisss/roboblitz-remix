@@ -2,9 +2,10 @@
 // Usage: proxy_tests [path to RoboGame\Content\LocalShaderCache.upk]
 
 #include "camera.h"
-#include "shader_info.h"
 #include "light_conversion.h"
-#include "texture_analysis.h"
+#include "material_albedo.h"
+#include "material_map.h"
+#include "shader_info.h"
 
 #include <cmath>
 #include <cstdio>
@@ -119,51 +120,105 @@ void TestReadMatrixConstant() {
     CHECK(rows._12 == 5 && rows._21 == 2 && rows._43 == 12);
 }
 
-// RGB565 helper for synthetic DXT blocks
-uint16_t Rgb565(float r, float g, float b) {
-    return static_cast<uint16_t>((lround(r * 31) << 11) | (lround(g * 63) << 5) | lround(b * 31));
+// Generated material code, as UE3 fills it into MaterialTemplate.usf
+const char* kMaterialSource = R"(
+// Uniform material expressions.
+float4 UniformVector_0;
+sampler2D Texture2D_0;
+sampler2D Texture2D_1;
+
+half3 GetMaterialNormal(FMaterialParameters Parameters)
+{
+	return tex2D(Texture2D_1,Parameters.TexCoords[0].xy).rgb;
 }
 
-// A DXT1 texture where every block has the given two endpoint colours
-std::vector<uint8_t> MakeDxt1(UINT blocksX, UINT blocksY, uint16_t c0, uint16_t c1) {
-    std::vector<uint8_t> data(blocksX * blocksY * 8, 0);
-    for (size_t i = 0; i < data.size(); i += 8) {
-        memcpy(&data[i], &c0, 2);
-        memcpy(&data[i + 2], &c1, 2);
-    }
-    return data;
+half3 GetMaterialDiffuseColor(FMaterialParameters Parameters)
+{
+	return (lerp(tex2D( Texture2D_0 ,Parameters.TexCoords[0].xy),
+	             tex2D(Texture2D_1,Parameters.TexCoords[0].xy),0.5).rgb * UniformVector_0.rgb);
 }
 
-void TestClassifyTextures() {
-    // Flat and slightly tilted normals vs typical colours
-    const auto normal = MakeDxt1(16, 16, Rgb565(0.5f, 0.5f, 1.0f), Rgb565(0.62f, 0.45f, 0.96f));
-    const auto grey = MakeDxt1(16, 16, Rgb565(0.5f, 0.5f, 0.5f), Rgb565(0.4f, 0.4f, 0.4f));
-    const auto sky = MakeDxt1(16, 16, Rgb565(0.35f, 0.55f, 0.9f), Rgb565(0.2f, 0.4f, 0.8f));
-    CHECK(ClassifyTexture(D3DFMT_DXT1, 64, 64, normal.data(), 16 * 8) == TextureContent::NormalMap);
-    CHECK(ClassifyTexture(D3DFMT_DXT1, 64, 64, grey.data(), 16 * 8) == TextureContent::Color);
-    CHECK(ClassifyTexture(D3DFMT_DXT1, 64, 64, sky.data(), 16 * 8) == TextureContent::Color);
+float3 GetMaterialPointLightTransfer(FMaterialParameters Parameters,float3 WorldLightVector,half FalloffExponent)
+{
+	return GetMaterialDiffuseColor(Parameters) * RadialAttenuation(WorldLightVector,FalloffExponent);
+}
+)";
 
-    // DXT5: colour endpoints are in the second half of each 16-byte block
-    std::vector<uint8_t> dxt5(16 * 16 * 16, 0xFF);
-    for (size_t i = 0; i < dxt5.size(); i += 16) {
-        const uint16_t c = Rgb565(0.5f, 0.5f, 1.0f);
-        memcpy(&dxt5[i + 8], &c, 2);
-        memcpy(&dxt5[i + 10], &c, 2);
-    }
-    CHECK(ClassifyTexture(D3DFMT_DXT5, 64, 64, dxt5.data(), 16 * 16) == TextureContent::NormalMap);
+bool EvaluatesTo(const std::string& expression, float r, float g, float b, const UniformLookup& uniforms = {}) {
+    const MaterialAlbedo albedo = AnalyzeAlbedo(expression);
+    float rgb[3];
+    if (!albedo.sampler.empty() || !albedo.color || !EvaluateColor(*albedo.color, uniforms, rgb)) return false;
+    return std::fabs(rgb[0] - r) < 1e-4f && std::fabs(rgb[1] - g) < 1e-4f && std::fabs(rgb[2] - b) < 1e-4f;
+}
 
-    // A8R8G8B8, bytes B G R A
-    std::vector<uint8_t> argb(32 * 32 * 4);
-    for (size_t i = 0; i < argb.size(); i += 4) {
-        argb[i] = 255; argb[i + 1] = 128; argb[i + 2] = 128; argb[i + 3] = 255;
-    }
-    CHECK(ClassifyTexture(D3DFMT_A8R8G8B8, 32, 32, argb.data(), 32 * 4) == TextureContent::NormalMap);
-    for (size_t i = 0; i < argb.size(); i += 4) argb[i] = 40; // brownish: B=40 G=128 R=128
-    CHECK(ClassifyTexture(D3DFMT_A8R8G8B8, 32, 32, argb.data(), 32 * 4) == TextureContent::Color);
+void TestMaterialAlbedo() {
+    const std::string diffuse = ExtractMaterialExpression(kMaterialSource, "GetMaterialDiffuseColor");
+    CHECK(diffuse == "(lerp(tex2D( Texture2D_0 ,Parameters.TexCoords[0].xy),               "
+                     "tex2D(Texture2D_1,Parameters.TexCoords[0].xy),0.5).rgb * UniformVector_0.rgb)");
+    CHECK(ExtractMaterialExpression(kMaterialSource, "GetMaterialEmissive").empty());
+    CHECK(ExtractMaterialExpression(kMaterialSource, "GetMaterialNormal") ==
+          "tex2D(Texture2D_1,Parameters.TexCoords[0].xy).rgb");
 
-    // Too small to judge, and unsupported formats
-    CHECK(ClassifyTexture(D3DFMT_DXT1, 4, 4, normal.data(), 8) == TextureContent::Unknown);
-    CHECK(ClassifyTexture(D3DFMT_R5G6B5, 64, 64, normal.data(), 128) == TextureContent::Unknown);
+    // Textures: the first one sampled
+    CHECK(AnalyzeAlbedo(diffuse).sampler == "Texture2D_0");
+    CHECK(!AnalyzeAlbedo(diffuse).color);
+    CHECK(AnalyzeAlbedo("mytex2D(Texture2D_3) * tex2Dbias(Texture2D_2, uv)").sampler == "Texture2D_2");
+
+    // Constant colours, as UE3 generates them
+    CHECK(EvaluatesTo("float3(0.21951973,0.5,1.00000000)", 0.21951973f, 0.5f, 1.0f));
+    CHECK(EvaluatesTo("(0.25000000)", 0.25f, 0.25f, 0.25f));
+    CHECK(EvaluatesTo("((float4(0.2,0.4,0.6,1.0) * 2.0) - float4(0.1,0.1,0.1,0.1)).rgb", 0.3f, 0.7f, 1.0f));
+    CHECK(EvaluatesTo("lerp(float3(0,0,0), float3(1,0.5,0.25), 0.5f)", 0.5f, 0.25f, 0.125f));
+    CHECK(EvaluatesTo("saturate(-float3(0.5,1.5,0.5).bgr)", 0, 0, 0));
+    CHECK(EvaluatesTo("(float3)float4(0.1,0.2,0.3,0.4)", 0.1f, 0.2f, 0.3f));
+    CHECK(EvaluatesTo("(Parameters.VertexColor.rgb * float3(0.5,0.5,0.5))", 0.5f, 0.5f, 0.5f));
+
+    // Uniform parameters are read when evaluating
+    const float uniform[4] = {0.25f, 0.5f, 0.75f, 1.0f};
+    const UniformLookup lookup = [&](const std::string& name) { return name == "UniformVector_0" ? uniform : nullptr; };
+    CHECK(EvaluatesTo("(float3(0.5,0.5,0.5) * ((1.00000000) - UniformVector_0.rgb))", 0.375f, 0.25f, 0.125f, lookup));
+    CHECK(!EvaluatesTo("UniformVector_1.rgb", 0, 0, 0, lookup));
+
+    // Not evaluable: unsupported functions and syntax, two-component results
+    CHECK(!AnalyzeAlbedo("DepthBiasedBlend(Parameters, float3(1,1,1), 0, 1)").color);
+    CHECK(!AnalyzeAlbedo("Parameters.TexCoords[0].xyx").color);
+    CHECK(!AnalyzeAlbedo("float3(1,1,1) +").color);
+    CHECK(!EvaluatesTo("float2(1,1)", 1, 1, 1));
+}
+
+void TestHashShaderBytecode() {
+    // ps_3_0: CTAB-like comment, a 2-token instruction, end
+    DWORD shader[] = {0xFFFF0300, 0x0002FFFE, 0x42415443, 0, 0x02000001, 0x800F0800, 0x80E40000, 0x0000FFFF, 0xDEAD};
+    const uint64_t hash = HashShaderBytecode(shader);
+    CHECK(hash != 0);
+    shader[8] = 0xBEEF; // after the end token: not part of the shader
+    CHECK(HashShaderBytecode(shader) == hash);
+    shader[6] = 0x80E40001;
+    CHECK(HashShaderBytecode(shader) != hash);
+
+    const DWORD ps14[] = {0xFFFF0104, 0x0000FFFF};
+    CHECK(HashShaderBytecode(ps14) == 0);
+}
+
+void TestMaterialMap(const char* directory) {
+    const std::string path = std::string(directory) + "proxy_tests_materials.txt";
+    const std::wstring widePath(path.begin(), path.end());
+    std::remove(path.c_str());
+
+    MaterialMap map;
+    CHECK(map.Load(widePath) == 0);
+    CHECK(map.Add(0x0123456789abcdefull, {"diffuse", "tex2D(Texture2D_0,uv).rgb"}));
+    CHECK(map.Add(42, {"emissive", "float3(1,0.5,0)"}));
+    CHECK(!map.Add(42, {"diffuse", "float3(0,0,0)"})); // first entry wins
+
+    MaterialMap reloaded;
+    CHECK(reloaded.Load(widePath) == 2);
+    MaterialMap::Entry entry;
+    CHECK(reloaded.Find(0x0123456789abcdefull, entry) && entry.source == "diffuse" &&
+          entry.expression == "tex2D(Texture2D_0,uv).rgb");
+    CHECK(reloaded.Find(42, entry) && entry.source == "emissive" && entry.expression == "float3(1,0.5,0)");
+    CHECK(!reloaded.Find(43, entry));
+    std::remove(path.c_str());
 }
 
 void TestLightConversion() {
@@ -257,12 +312,19 @@ void TestShaderCache(const char* path) {
         PixelShaderInfo info;
         if (!ParsePixelShader(function.data(), info)) continue;
         ++pixelShaders;
+        CHECK(HashShaderBytecode(function.data()) != 0);
         ++sampler0[info.samplers.empty() || info.samplers[0].empty() ? "(none)" : info.samplers[0]];
     }
     std::printf("Shader cache: %d pixel shaders; sampler 0 holds:", pixelShaders);
     for (const auto& [name, count] : sampler0) std::printf(" %s x%d", name.c_str(), count);
     std::printf("\n");
     CHECK(pixelShaders > 1000);
+}
+
+std::string TempDirectory() {
+    char path[MAX_PATH];
+    const DWORD length = GetTempPathA(MAX_PATH, path);
+    return std::string(path, length);
 }
 
 } // namespace
@@ -272,7 +334,9 @@ int main(int argc, char** argv) {
     TestDecomposeScaledFinitePerspective();
     TestRejectOrthographic();
     TestReadMatrixConstant();
-    TestClassifyTextures();
+    TestMaterialAlbedo();
+    TestHashShaderBytecode();
+    TestMaterialMap(TempDirectory().c_str());
     TestLightConversion();
     if (argc > 1) TestShaderCache(argv[1]);
 
