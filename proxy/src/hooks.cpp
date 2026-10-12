@@ -153,10 +153,12 @@ struct DeviceState {
     D3DMATRIX world, view, projection;
     bool transformsKnown = false;
 
-    // Last decomposed camera
+    // Last camera matrix seen, and the last one that decomposed (in use while a matrix is rejected)
     D3DMATRIX cameraInput;
+    bool cameraInputKnown = false;
+    bool cameraInputValid = false;
     ViewProjection camera;
-    bool cameraValid = false;
+    bool hasCamera = false;
     bool cameraLogged = false;
 
     // Render target tracking
@@ -459,23 +461,31 @@ void SetTransforms(IDirect3DDevice9* device, const D3DMATRIX& world, const D3DMA
     state.transformsKnown = true;
 }
 
-// Decomposes the camera matrix, reusing the previous result while it does not change
+// Decomposes the camera matrix, reusing the previous result while it does not change. A matrix
+// that does not decompose leaves the last good camera in state.camera. Returns whether this one
+// decomposed.
 bool UpdateCamera(const D3DMATRIX& viewProjection) {
-    if (state.cameraValid && SameMatrix(viewProjection, state.cameraInput)) return true;
+    if (state.cameraInputKnown && SameMatrix(viewProjection, state.cameraInput)) return state.cameraInputValid;
 
+    ViewProjection decomposed = {};
+    const bool valid = DecomposeViewProjection(viewProjection, decomposed) && decomposed.error < 1e-3f;
     state.cameraInput = viewProjection;
-    state.cameraValid = DecomposeViewProjection(viewProjection, state.camera) && state.camera.error < 1e-3f;
+    state.cameraInputKnown = true;
+    state.cameraInputValid = valid;
+    if (valid) {
+        state.camera = decomposed;
+        state.hasCamera = true;
+    }
 
     if (!state.cameraLogged) {
         state.cameraLogged = true;
-        const ViewProjection& c = state.camera;
-        Log("First camera: valid=%d error=%g handedness=%g near=%g far=%g", state.cameraValid, c.error, c.handedness,
-            c.nearPlane, c.farPlane);
+        Log("First camera: valid=%d error=%g handedness=%g near=%g far=%g", valid, decomposed.error,
+            decomposed.handedness, decomposed.nearPlane, decomposed.farPlane);
         LogMatrix("ViewProjectionMatrix", viewProjection);
-        LogMatrix("View", c.view);
-        LogMatrix("Projection", c.projection);
+        LogMatrix("View", decomposed.view);
+        LogMatrix("Projection", decomposed.projection);
     }
-    return state.cameraValid;
+    return valid;
 }
 
 // Sets up transforms for the next draw. Returns false if the draw should be skipped.
@@ -509,7 +519,8 @@ bool PrepareDraw(IDirect3DDevice9* device) {
             const MatrixConstant& vp = shader->viewProjection;
             if (!UpdateCamera(ReadMatrixConstant(&state.vsConstants[vp.reg], vp.rowMajor))) {
                 ++state.stats.badCamera;
-                break;
+                if (!state.hasCamera) break;
+                // Keep the last good camera: without camera transforms Remix ray traces nothing
             }
             const MatrixConstant& l2w = shader->localToWorld;
             const D3DMATRIX world = config.useLocalToWorld && l2w.IsValid()

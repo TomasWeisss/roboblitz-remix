@@ -15,7 +15,8 @@ D3DMATRIX Identity();
 struct ViewProjection {
     D3DMATRIX view;
     D3DMATRIX projection;
-    float error;       // max abs difference between view * projection and the input
+    float error;       // max difference between view * projection and the input, relative to
+                       // each element's magnitude (at least 1)
     float handedness;  // determinant of the view rotation: +1 proper, -1 mirrored
     float nearPlane;
     float farPlane;    // +inf for an infinite projection (UE3 uses one)

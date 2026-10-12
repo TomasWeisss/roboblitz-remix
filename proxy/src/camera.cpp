@@ -97,12 +97,14 @@ bool DecomposeViewProjection(const D3DMATRIX& viewProjection, ViewProjection& ou
                      R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
                      R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
 
-    // Check against the (normalized) input
+    // Check against the (normalized) input. Relative to each element's size: the translation
+    // entries grow with the distance from the world origin, and so does their float rounding.
     const D3DMATRIX product = Multiply(out.view, out.projection);
     out.error = 0.0f;
     for (int r = 0; r < 4; ++r) {
         for (int k = 0; k < 4; ++k) {
-            out.error = std::fmax(out.error, std::fabs(product.m[r][k] - c[k][r]));
+            const float difference = std::fabs(product.m[r][k] - c[k][r]);
+            out.error = std::fmax(out.error, difference / std::fmax(1.0f, std::fabs(c[k][r])));
         }
     }
     return true;

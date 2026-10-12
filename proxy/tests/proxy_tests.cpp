@@ -77,6 +77,12 @@ void TestDecomposeUe3Camera() {
     CHECK(std::fabs(result.handedness - 1.0f) < 1e-4f);
     CHECK(std::fabs(result.nearPlane - 10.0f) < 1e-3f);
     CHECK(std::isinf(result.farPlane));
+
+    float decodedPosition[3];
+    ViewPosition(result.view, decodedPosition);
+    for (int i = 0; i < 3; ++i) CHECK(std::fabs(decodedPosition[i] - position[i]) < 0.1f);
+    const float fov = 2.0f * std::atan(std::tan(0.785f) / (16.0f / 9.0f)) * 57.29578f;
+    CHECK(std::fabs(VerticalFovDegrees(result.projection) - fov) < 1e-3f);
 }
 
 void TestDecomposeScaledFinitePerspective() {
@@ -104,6 +110,19 @@ void TestDecomposeScaledFinitePerspective() {
     CHECK(Near(result.projection, projection, 1e-4f));
     CHECK(std::fabs(result.nearPlane - 5.0f) < 1e-2f);
     CHECK(std::fabs(result.farPlane - 1000.0f) < 1.0f);
+}
+
+// Far from the world origin the translation entries are large and so is their float rounding;
+// the error is relative, so such cameras must still pass (absolute errors here reach 1e-3+)
+void TestDecomposeFarFromOrigin() {
+    for (float yaw = 0; yaw < 6.28f; yaw += 0.1f) {
+        const float position[3] = {-6711.3f, -33157.8f, -872.9f};
+        const D3DMATRIX viewProjection =
+            Multiply(MakeView(yaw, 0.1f, position), MakeUe3Projection(0.785f, 16.0f / 9.0f, 10.0f));
+        ViewProjection result;
+        CHECK(DecomposeViewProjection(viewProjection, result));
+        CHECK(result.error < 1e-4f);
+    }
 }
 
 void TestRejectOrthographic() {
@@ -332,6 +351,7 @@ std::string TempDirectory() {
 int main(int argc, char** argv) {
     TestDecomposeUe3Camera();
     TestDecomposeScaledFinitePerspective();
+    TestDecomposeFarFromOrigin();
     TestRejectOrthographic();
     TestReadMatrixConstant();
     TestMaterialAlbedo();
